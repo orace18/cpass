@@ -1,0 +1,48 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:cpass;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    enabled: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      repositories:
+        enabled: false
+  rabbitmq:
+    listener:
+      simple:
+        auto-startup: false
+
+app:
+  admin-token: test-admin-token
+  messaging:
+    exchange: test.exchange
+    queue: test.queue
+    routing-key: test.routing
+  security:
+    master-key: 0123456789abcdef0123456789abcdef
+    hmac:
+      allowed-skew-seconds: 300
+      nonce-ttl-seconds: 300
+      signing-version: v1
+  otp:
+    length: 6
+    ttl-seconds: 120
+    max-send-retries: 3
+    max-verify-attempts: 3
+    cooldown-seconds: 60
+    message-template: "Your verification code is {otp}"
+    hash-pepper: test-pepper
+  kyc:
+    s3:
+      endpoint: http://localhost:9000
+      region: us-east-1
+      bucket: cpass-kyc
+      access-key: minioadmin
+      secret-key: minioadmin

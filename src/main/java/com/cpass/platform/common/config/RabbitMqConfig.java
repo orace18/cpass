@@ -1,0 +1,36 @@
+package com.cpass.platform.common.config;
+
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.DirectExchange;
+import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class RabbitMqConfig {
+
+    @Bean
+    public Queue dispatchQueue(@Value("${app.messaging.queue}") String queueName) {
+        return new Queue(queueName, true);
+    }
+
+    @Bean
+    public DirectExchange dispatchExchange(@Value("${app.messaging.exchange}") String exchangeName) {
+        return new DirectExchange(exchangeName, true, false);
+    }
+
+    @Bean
+    public Binding dispatchBinding(Queue dispatchQueue,
+                                   DirectExchange dispatchExchange,
+                                   @Value("${app.messaging.routing-key}") String routingKey) {
+        return BindingBuilder.bind(dispatchQueue).to(dispatchExchange).with(routingKey);
+    }
+
+    @Bean
+    public Jackson2JsonMessageConverter jackson2JsonMessageConverter() {
+        return new Jackson2JsonMessageConverter();
+    }
+}
