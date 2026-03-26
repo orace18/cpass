@@ -54,6 +54,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                 || path.startsWith("/v3/api-docs")
                 || path.startsWith("/swagger-ui")
                 || path.startsWith("/clients")
+                || path.startsWith("/admin")
                 || path.startsWith("/webhooks/delivery");
     }
 

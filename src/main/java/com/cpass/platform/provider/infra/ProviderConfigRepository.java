@@ -10,4 +10,6 @@ import java.util.UUID;
 public interface ProviderConfigRepository extends JpaRepository<ProviderConfigEntity, UUID> {
 
     List<ProviderConfigEntity> findByChannelAndActiveTrueOrderByPriorityAsc(MessageChannel channel);
+
+    java.util.Optional<ProviderConfigEntity> findByCodeAndChannel(String code, MessageChannel channel);
 }

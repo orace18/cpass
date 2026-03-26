@@ -57,4 +57,15 @@ public class ProviderRoutingService {
     public List<ProviderConfigEntity> activeProviders(MessageChannel channel) {
         return providerConfigRepository.findByChannelAndActiveTrueOrderByPriorityAsc(channel);
     }
+
+    public ProviderDispatchResult directDispatch(String providerCode, MessageChannel channel, ProviderMessage message) {
+        MessagingProvider provider = providersByCode.get(providerCode);
+        if (provider == null) {
+            return ProviderDispatchResult.failure(providerCode, "Provider not found: " + providerCode);
+        }
+        return providerConfigRepository.findByCodeAndChannel(providerCode, channel)
+                .map(config -> provider.send(message, config))
+                .orElseGet(() -> ProviderDispatchResult.failure(providerCode,
+                        "No config found for provider=" + providerCode + " channel=" + channel));
+    }
 }
