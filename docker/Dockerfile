@@ -1,0 +1,11 @@
+FROM eclipse-temurin:21-jre
+ARG WORK_DIRECTORY=/home/cpass
+ARG APP_NAME=internal-cpaas.jar
+ARG APP_LINK=internal-cpaas-1.0.0.jar
+ARG APP_PORT=8080
+ENV ENV_APP_NAME=${APP_NAME}
+ENV JAVA_OPTS='-Xmx512m -Xms256m'
+WORKDIR ${WORK_DIRECTORY}
+ADD ${APP_LINK} ${WORK_DIRECTORY}/${APP_NAME}
+EXPOSE ${APP_PORT}
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS ${APP_CONFIG_DIRECTORY:+-Dspring.config.location=$APP_CONFIG_DIRECTORY} -jar $ENV_APP_NAME"]

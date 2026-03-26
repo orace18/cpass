@@ -1,0 +1,66 @@
+services:
+  spring-app:
+    image: ${IMAGE_FULL}
+    container_name: ${CI_PROJECT_NAME}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=dev
+
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-cpass}
+      - SPRING_DATASOURCE_USERNAME=${DB_USER}
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
+
+      - SPRING_DATA_REDIS_HOST=${REDIS_HOST}
+      - SPRING_DATA_REDIS_PORT=${REDIS_PORT:-6379}
+      - SPRING_DATA_REDIS_PASSWORD=${REDIS_PASSWORD:-}
+
+      - SPRING_RABBITMQ_HOST=${RABBITMQ_HOST}
+      - SPRING_RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - SPRING_RABBITMQ_USERNAME=${RABBITMQ_USER:-guest}
+      - SPRING_RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+
+      - APP_ADMIN_TOKEN=${ADMIN_TOKEN}
+      - APP_SECURITY_MASTER_KEY=${SECURITY_MASTER_KEY}
+      - APP_OTP_HASH_PEPPER=${OTP_HASH_PEPPER:-replace-with-long-random-pepper}
+
+      - APP_KYC_S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - APP_KYC_S3_BUCKET=${S3_BUCKET:-cpass-kyc}
+      - APP_KYC_S3_ACCESS_KEY=${S3_ACCESS_KEY:-minioadmin}
+      - APP_KYC_S3_SECRET_KEY=${S3_SECRET_KEY:-minioadmin}
+
+      - LOGGING_LEVEL_ROOT=${LOG_LEVEL_ROOT:-INFO}
+      - LOGGING_LEVEL_COM_CPASS_PLATFORM=${LOG_LEVEL_CPASS:-DEBUG}
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_net"
+      - "traefik.http.routers.cpass-dev.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/${CI_PROJECT_NAME}`)"
+      - "traefik.http.routers.cpass-dev.entrypoints=websecure"
+      - "traefik.http.routers.cpass-dev.tls.certresolver=myresolver"
+      - "traefik.http.services.cpass-dev.loadbalancer.server.port=8080"
+      - "traefik.http.routers.cpass-dev.middlewares=cpass-dev-strip,cpass-dev-addctx"
+      - "traefik.http.middlewares.cpass-dev-strip.stripprefix.prefixes=/${CI_PROJECT_NAME}"
+      - "traefik.http.middlewares.cpass-dev-addctx.addprefix.prefix=/internal-cpaas"
+      - "traefik.http.routers.cpass-dev-direct.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/internal-cpaas`)"
+      - "traefik.http.routers.cpass-dev-direct.entrypoints=websecure"
+      - "traefik.http.routers.cpass-dev-direct.tls.certresolver=myresolver"
+      - "traefik.http.routers.cpass-dev-direct.service=cpass-dev"
+      - "traefik.http.routers.cpass-dev-docs.rule=Host(`${API_DOMAIN}`) && (PathPrefix(`/internal-cpaas/v3/api-docs`) || PathPrefix(`/internal-cpaas/swagger-ui`) || Path(`/internal-cpaas/swagger-ui.html`))"
+      - "traefik.http.routers.cpass-dev-docs.entrypoints=websecure"
+      - "traefik.http.routers.cpass-dev-docs.tls.certresolver=myresolver"
+      - "traefik.http.routers.cpass-dev-docs.service=cpass-dev"
+
+    networks:
+      - traefik_net
+      - pgsql_net
+      - cpass_net
+
+networks:
+  traefik_net:
+    external: true
+  pgsql_net:
+    external: true
+  cpass_net:
+    external: true

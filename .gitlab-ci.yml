@@ -1,0 +1,173 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && ($CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "prod")'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "prod")'
+      when: always
+    - if: '$CI_PIPELINE_SOURCE == "pipeline" && ($CI_COMMIT_BRANCH == "dev" || $CI_COMMIT_BRANCH == "prod")'
+      when: always
+    - when: never
+
+stages:
+  - info
+  - security
+  - build
+  - tag
+  - push
+  - deploy
+
+default:
+  tags:
+    - ${RUNNER_TAG}
+
+variables:
+  IMAGE_FULL: "${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+
+pipeline_info:
+  stage: info
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  script:
+    - echo "Pipeline info"
+    - echo "Project $CI_PROJECT_PATH"
+    - echo "Branch $CI_COMMIT_REF_NAME"
+    - echo "Pipeline ID $CI_PIPELINE_ID"
+    - echo "Pipeline IID $CI_PIPELINE_IID"
+    - echo "Commit SHA $CI_COMMIT_SHORT_SHA"
+    - echo "Triggered by $CI_PIPELINE_SOURCE"
+    - echo "Environment $CI_ENVIRONMENT_NAME"
+    - echo "Registry image $CI_REGISTRY_IMAGE"
+    - echo "Resolved image ${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+
+scan_dependencies:
+  stage: security
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: pipeline_info
+  script:
+    - trivy fs --severity HIGH,CRITICAL --format json --output trivy-deps-report.json .
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - trivy-deps-report.json
+    reports:
+      dependency_scanning: trivy-deps-report.json
+
+scan_secrets:
+  stage: security
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: pipeline_info
+  script:
+    - gitleaks detect --no-git --redact -f json -r gitleaks-report.json
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - gitleaks-report.json
+    reports:
+      secret_detection: gitleaks-report.json
+
+scan_image:
+  stage: security
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: pipeline_info
+  script:
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - trivy image --severity HIGH,CRITICAL --format json --output trivy-image-report.json "${IMAGE_FULL}"
+  allow_failure: true
+  artifacts:
+    when: always
+    paths:
+      - trivy-image-report.json
+    reports:
+      container_scanning: trivy-image-report.json
+
+build:
+  stage: build
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: scan_dependencies
+      optional: true
+    - job: scan_secrets
+      optional: true
+    - job: scan_image
+      optional: true
+  before_script:
+    - echo "Change java and javac version"
+    - sudo update-alternatives --set java /usr/lib/jvm/temurin-21-jdk-amd64/bin/java
+    - sudo update-alternatives --set javac /usr/lib/jvm/temurin-21-jdk-amd64/bin/javac
+  script:
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - echo "Building JAR with Maven..."
+    - mvn clean package -DskipTests -Dmaven.repo.local=$CI_MAVEN_DIR
+    - echo "Building Docker image ${IMAGE_FULL}..."
+    - docker build -t "${IMAGE_FULL}" .
+    - echo "Docker image built: ${IMAGE_FULL}"
+
+tag:
+  stage: tag
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: build
+  script:
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - echo "Verifying image ${IMAGE_FULL}..."
+    - docker image inspect "${IMAGE_FULL}" >/dev/null 2>&1 || {
+        echo "Image ${IMAGE_FULL} not found"
+        exit 1
+      }
+    - echo "Image ready: ${IMAGE_FULL}"
+
+push:
+  stage: push
+  environment:
+    name: $CI_COMMIT_REF_NAME
+    action: prepare
+  needs:
+    - job: tag
+  script:
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - echo "Push de l'image ${IMAGE_FULL}"
+    - docker push "${IMAGE_FULL}"
+
+deploy:
+  stage: deploy
+  environment:
+    name: $CI_COMMIT_REF_NAME
+  needs:
+    - job: push
+  variables:
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_HOST: "tcp://${DOCKER_HOST_CLUB_CHRETIEN}"
+    DOCKER_CERT_PATH: /tmp/docker-certs
+
+  before_script:
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - mkdir -p "$DOCKER_CERT_PATH"
+    - printf '%s' "$DOCKER_CA_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/ca.pem"
+    - printf '%s' "$DOCKER_CERT_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/cert.pem"
+    - printf '%s' "$DOCKER_KEY_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/key.pem"
+    - chmod 600 "$DOCKER_CERT_PATH"/*
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+  script:
+    - echo "Deploiement sur l'environnement... $CI_COMMIT_REF_NAME"
+    - echo "Using image ${IMAGE_FULL}"
+    - docker pull "${IMAGE_FULL}"
+    - IMAGE_FULL="${IMAGE_FULL}" docker compose -f "${COMPOSE_FILE}" down --remove-orphans
+    - IMAGE_FULL="${IMAGE_FULL}" docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
