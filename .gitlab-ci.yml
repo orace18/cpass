@@ -22,9 +22,6 @@ default:
 variables:
   IMAGE_FULL: "${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
 
-# ─────────────────────────────────────────
-# INFO
-# ─────────────────────────────────────────
 pipeline_info:
   stage: info
   environment:
@@ -37,9 +34,6 @@ pipeline_info:
     - echo "Commit SHA   $CI_COMMIT_SHORT_SHA"
     - echo "Image        ${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
 
-# ─────────────────────────────────────────
-# SECURITY
-# ─────────────────────────────────────────
 scan_dependencies:
   stage: security
   environment:
@@ -74,9 +68,6 @@ scan_secrets:
     reports:
       secret_detection: gitleaks-report.json
 
-# ─────────────────────────────────────────
-# BUILD
-# ─────────────────────────────────────────
 build:
   stage: build
   environment:
@@ -98,9 +89,6 @@ build:
     - docker build -t "${IMAGE_FULL}" .
     - echo "Image built successfully"
 
-# ─────────────────────────────────────────
-# PUSH
-# ─────────────────────────────────────────
 push:
   stage: push
   environment:
@@ -112,11 +100,8 @@ push:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - docker push "${IMAGE_FULL}"
-    - echo "Image pushed: ${IMAGE_FULL}"
+    - echo "Image pushed ${IMAGE_FULL}"
 
-# ─────────────────────────────────────────
-# DEPLOY
-# ─────────────────────────────────────────
 deploy:
   stage: deploy
   environment:
@@ -127,7 +112,6 @@ deploy:
     DOCKER_TLS_VERIFY: "1"
     DOCKER_HOST: "tcp://${DOCKER_HOST_CLUB_CHRETIEN}"
     DOCKER_CERT_PATH: /tmp/docker-certs
-
   before_script:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
     - mkdir -p "$DOCKER_CERT_PATH"
@@ -136,22 +120,12 @@ deploy:
     - printf '%s' "$DOCKER_KEY_CLUB_CHRETIEN"  | base64 -d > "$DOCKER_CERT_PATH/key.pem"
     - chmod 600 "$DOCKER_CERT_PATH"/*
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-
   script:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
-    - |
-      case "$CI_COMMIT_REF_NAME" in
-        dev)  COMPOSE_FILE="docker-compose-dev.yml" ;;
-        prod) COMPOSE_FILE="docker-compose-prod.yml" ;;
-        *)
-          echo "Branche non supportée: $CI_COMMIT_REF_NAME"
-          exit 1
-          ;;
-      esac
-      echo "Deploiement branche=$CI_COMMIT_REF_NAME fichier=$COMPOSE_FILE image=$IMAGE_FULL"
-      docker pull "${IMAGE_FULL}"
-      IMAGE_FULL="${IMAGE_FULL}" CI_PROJECT_NAME="${CI_PROJECT_NAME}" \
-        docker compose -f "${COMPOSE_FILE}" down --remove-orphans
-      IMAGE_FULL="${IMAGE_FULL}" CI_PROJECT_NAME="${CI_PROJECT_NAME}" \
-        docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
-      echo "Deploiement termine"
+    - if [ "$CI_COMMIT_REF_NAME" = "dev" ]; then COMPOSE_FILE="docker-compose-dev.yml"; elif [ "$CI_COMMIT_REF_NAME" = "prod" ]; then COMPOSE_FILE="docker-compose-prod.yml"; else echo "Branche non supportee"; exit 1; fi
+    - echo "Deploy branch=$CI_COMMIT_REF_NAME file=$COMPOSE_FILE image=$IMAGE_FULL"
+    - docker pull "${IMAGE_FULL}"
+    - export IMAGE_FULL CI_PROJECT_NAME
+    - docker compose -f "${COMPOSE_FILE}" down --remove-orphans
+    - docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
+    - echo "Deploiement termine"
