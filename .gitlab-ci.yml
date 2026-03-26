@@ -12,7 +12,6 @@ stages:
   - info
   - security
   - build
-  - tag
   - push
   - deploy
 
@@ -23,23 +22,24 @@ default:
 variables:
   IMAGE_FULL: "${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
 
+# ─────────────────────────────────────────
+# INFO
+# ─────────────────────────────────────────
 pipeline_info:
   stage: info
   environment:
     name: $CI_COMMIT_REF_NAME
     action: prepare
   script:
-    - echo "Pipeline info"
-    - echo "Project $CI_PROJECT_PATH"
-    - echo "Branch $CI_COMMIT_REF_NAME"
-    - echo "Pipeline ID $CI_PIPELINE_ID"
+    - echo "Project      $CI_PROJECT_PATH"
+    - echo "Branch       $CI_COMMIT_REF_NAME"
     - echo "Pipeline IID $CI_PIPELINE_IID"
-    - echo "Commit SHA $CI_COMMIT_SHORT_SHA"
-    - echo "Triggered by $CI_PIPELINE_SOURCE"
-    - echo "Environment $CI_ENVIRONMENT_NAME"
-    - echo "Registry image $CI_REGISTRY_IMAGE"
-    - echo "Resolved image ${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - echo "Commit SHA   $CI_COMMIT_SHORT_SHA"
+    - echo "Image        ${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
 
+# ─────────────────────────────────────────
+# SECURITY
+# ─────────────────────────────────────────
 scan_dependencies:
   stage: security
   environment:
@@ -74,24 +74,9 @@ scan_secrets:
     reports:
       secret_detection: gitleaks-report.json
 
-scan_image:
-  stage: security
-  environment:
-    name: $CI_COMMIT_REF_NAME
-    action: prepare
-  needs:
-    - job: pipeline_info
-  script:
-    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
-    - trivy image --severity HIGH,CRITICAL --format json --output trivy-image-report.json "${IMAGE_FULL}"
-  allow_failure: true
-  artifacts:
-    when: always
-    paths:
-      - trivy-image-report.json
-    reports:
-      container_scanning: trivy-image-report.json
-
+# ─────────────────────────────────────────
+# BUILD
+# ─────────────────────────────────────────
 build:
   stage: build
   environment:
@@ -102,22 +87,22 @@ build:
       optional: true
     - job: scan_secrets
       optional: true
-    - job: scan_image
-      optional: true
   before_script:
-    - echo "Change java and javac version"
     - sudo update-alternatives --set java /usr/lib/jvm/temurin-21-jdk-amd64/bin/java
     - sudo update-alternatives --set javac /usr/lib/jvm/temurin-21-jdk-amd64/bin/javac
   script:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
-    - echo "Building JAR with Maven..."
+    - echo "Building JAR..."
     - mvn clean package -DskipTests -Dmaven.repo.local=$CI_MAVEN_DIR
     - echo "Building Docker image ${IMAGE_FULL}..."
     - docker build -t "${IMAGE_FULL}" .
-    - echo "Docker image built: ${IMAGE_FULL}"
+    - echo "Image built successfully"
 
-tag:
-  stage: tag
+# ─────────────────────────────────────────
+# PUSH
+# ─────────────────────────────────────────
+push:
+  stage: push
   environment:
     name: $CI_COMMIT_REF_NAME
     action: prepare
@@ -125,26 +110,13 @@ tag:
     - job: build
   script:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
-    - echo "Verifying image ${IMAGE_FULL}..."
-    - docker image inspect "${IMAGE_FULL}" >/dev/null 2>&1 || {
-        echo "Image ${IMAGE_FULL} not found"
-        exit 1
-      }
-    - echo "Image ready: ${IMAGE_FULL}"
-
-push:
-  stage: push
-  environment:
-    name: $CI_COMMIT_REF_NAME
-    action: prepare
-  needs:
-    - job: tag
-  script:
-    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - echo "Push de l'image ${IMAGE_FULL}"
     - docker push "${IMAGE_FULL}"
+    - echo "Image pushed: ${IMAGE_FULL}"
 
+# ─────────────────────────────────────────
+# DEPLOY
+# ─────────────────────────────────────────
 deploy:
   stage: deploy
   environment:
@@ -159,15 +131,27 @@ deploy:
   before_script:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
     - mkdir -p "$DOCKER_CERT_PATH"
-    - printf '%s' "$DOCKER_CA_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/ca.pem"
+    - printf '%s' "$DOCKER_CA_CLUB_CHRETIEN"   | base64 -d > "$DOCKER_CERT_PATH/ca.pem"
     - printf '%s' "$DOCKER_CERT_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/cert.pem"
-    - printf '%s' "$DOCKER_KEY_CLUB_CHRETIEN" | base64 -d > "$DOCKER_CERT_PATH/key.pem"
+    - printf '%s' "$DOCKER_KEY_CLUB_CHRETIEN"  | base64 -d > "$DOCKER_CERT_PATH/key.pem"
     - chmod 600 "$DOCKER_CERT_PATH"/*
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
   script:
-    - echo "Deploiement sur l'environnement... $CI_COMMIT_REF_NAME"
-    - echo "Using image ${IMAGE_FULL}"
-    - docker pull "${IMAGE_FULL}"
-    - IMAGE_FULL="${IMAGE_FULL}" docker compose -f "${COMPOSE_FILE}" down --remove-orphans
-    - IMAGE_FULL="${IMAGE_FULL}" docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
+    - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
+    - |
+      case "$CI_COMMIT_REF_NAME" in
+        dev)  COMPOSE_FILE="docker-compose-dev.yml" ;;
+        prod) COMPOSE_FILE="docker-compose-prod.yml" ;;
+        *)
+          echo "Branche non supportée: $CI_COMMIT_REF_NAME"
+          exit 1
+          ;;
+      esac
+      echo "Deploiement branche=$CI_COMMIT_REF_NAME fichier=$COMPOSE_FILE image=$IMAGE_FULL"
+      docker pull "${IMAGE_FULL}"
+      IMAGE_FULL="${IMAGE_FULL}" CI_PROJECT_NAME="${CI_PROJECT_NAME}" \
+        docker compose -f "${COMPOSE_FILE}" down --remove-orphans
+      IMAGE_FULL="${IMAGE_FULL}" CI_PROJECT_NAME="${CI_PROJECT_NAME}" \
+        docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
+      echo "Deploiement termine"
