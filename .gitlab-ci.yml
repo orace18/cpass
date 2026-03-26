@@ -126,7 +126,7 @@ deploy:
     - echo "Deploy branch=$CI_COMMIT_REF_NAME file=$COMPOSE_FILE image=$IMAGE_FULL"
     - docker network inspect cpass_net >/dev/null 2>&1 || docker network create cpass_net
     - docker pull "${IMAGE_FULL}"
-    - docker compose -f "${COMPOSE_FILE}" pull --quiet cpass-db || true
+    - docker compose -f "${COMPOSE_FILE}" pull --quiet cpass-db cpass-rabbitmq || true
     - export IMAGE_FULL CI_PROJECT_NAME
     - docker compose -f "${COMPOSE_FILE}" down --remove-orphans
     - docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --pull never
