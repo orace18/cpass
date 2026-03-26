@@ -1,14 +1,35 @@
 services:
+  cpass-db:
+    image: postgres:16-alpine
+    container_name: ${CI_PROJECT_NAME}-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-cpass}
+      - POSTGRES_USER=${DB_USER:-cpass}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-cpass}
+    volumes:
+      - cpass-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-cpass} -d ${DB_NAME:-cpass}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cpass_net
+
   spring-app:
     image: ${IMAGE_FULL}
     container_name: ${CI_PROJECT_NAME}
     restart: unless-stopped
+    depends_on:
+      cpass-db:
+        condition: service_healthy
     expose:
       - "8080"
     environment:
       - SPRING_PROFILES_ACTIVE=dev
 
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST:-localhost}:${DB_PORT:-5432}/${DB_NAME:-cpass}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://${DB_HOST:-cpass-db}:${DB_PORT:-5432}/${DB_NAME:-cpass}
       - SPRING_DATASOURCE_USERNAME=${DB_USER:-cpass}
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD:-cpass}
 
@@ -54,13 +75,13 @@ services:
 
     networks:
       - traefik_net
-      - pgsql_net
       - cpass_net
+
+volumes:
+  cpass-db-data:
 
 networks:
   traefik_net:
-    external: true
-  pgsql_net:
     external: true
   cpass_net:
     external: true
