@@ -124,6 +124,7 @@ deploy:
     - export IMAGE_FULL="${CI_REGISTRY_IMAGE}:${CI_PIPELINE_IID}"
     - if [ "$CI_COMMIT_REF_NAME" = "dev" ]; then COMPOSE_FILE="docker-compose-dev.yml"; elif [ "$CI_COMMIT_REF_NAME" = "prod" ]; then COMPOSE_FILE="docker-compose-prod.yml"; else echo "Branche non supportee"; exit 1; fi
     - echo "Deploy branch=$CI_COMMIT_REF_NAME file=$COMPOSE_FILE image=$IMAGE_FULL"
+    - docker network inspect cpass_net >/dev/null 2>&1 || docker network create cpass_net
     - docker pull "${IMAGE_FULL}"
     - export IMAGE_FULL CI_PROJECT_NAME
     - docker compose -f "${COMPOSE_FILE}" down --remove-orphans
