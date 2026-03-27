@@ -1,0 +1,102 @@
+package com.cpass.platform.admin.controller;
+
+import com.cpass.platform.client.infra.ClientRepository;
+import com.cpass.platform.common.security.AdminSecurityService;
+import com.cpass.platform.kyc.domain.KycCaseEntity;
+import com.cpass.platform.kyc.domain.KycCaseStatus;
+import com.cpass.platform.kyc.domain.KycDocumentEntity;
+import com.cpass.platform.kyc.dto.AdminKycReviewRequest;
+import com.cpass.platform.kyc.service.KycService;
+import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/admin/kyc")
+public class AdminKycController {
+
+    private final AdminSecurityService adminSecurityService;
+    private final KycService kycService;
+    private final ClientRepository clientRepository;
+
+    public AdminKycController(AdminSecurityService adminSecurityService,
+                              KycService kycService,
+                              ClientRepository clientRepository) {
+        this.adminSecurityService = adminSecurityService;
+        this.kycService = kycService;
+        this.clientRepository = clientRepository;
+    }
+
+    @GetMapping
+    public List<Map<String, Object>> listCases(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
+                                               @RequestParam(required = false) KycCaseStatus status) {
+        adminSecurityService.ensureAdminToken(headerToken);
+        return kycService.listCases(status).stream()
+                .map(this::toMap)
+                .toList();
+    }
+
+    @PostMapping("/{caseId}/review")
+    public Map<String, Object> review(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
+                                      @PathVariable UUID caseId,
+                                      @Valid @RequestBody AdminKycReviewRequest request) {
+        adminSecurityService.ensureAdminToken(headerToken);
+        KycCaseEntity reviewed = kycService.listCases(null).stream()
+                .filter(item -> item.getId().equals(caseId))
+                .findFirst()
+                .orElse(null);
+        kycService.reviewCase(caseId, request);
+        KycCaseEntity updated = reviewed == null
+                ? kycService.listCases(null).stream().filter(item -> item.getId().equals(caseId)).findFirst().orElseThrow()
+                : kycService.listCases(null).stream().filter(item -> item.getId().equals(caseId)).findFirst().orElse(reviewed);
+        return toMap(updated);
+    }
+
+    @GetMapping("/documents/{documentId}/download")
+    public ResponseEntity<byte[]> download(@PathVariable UUID documentId,
+                                           @RequestParam(required = false) String token,
+                                           @RequestHeader(value = "X-ADMIN-TOKEN", required = false) String headerToken) {
+        adminSecurityService.ensureAdminToken(headerToken != null ? headerToken : token);
+        KycService.DownloadedDocument document = kycService.download(documentId);
+        return ResponseEntity.ok()
+                .contentType(document.contentType() == null ? MediaType.APPLICATION_OCTET_STREAM : MediaType.parseMediaType(document.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(document.fileName()).build().toString())
+                .body(document.content());
+    }
+
+    private Map<String, Object> toMap(KycCaseEntity kycCase) {
+        List<KycDocumentEntity> documents = kycService.documentsFor(kycCase);
+        KycDocumentEntity latestDocument = documents.isEmpty() ? null : documents.get(documents.size() - 1);
+        String clientName = clientRepository.findById(kycCase.getClientId()).map(client -> client.getName()).orElse("Unknown client");
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("id", kycCase.getId().toString());
+        payload.put("referenceId", kycCase.getReferenceId());
+        payload.put("clientId", kycCase.getClientId().toString());
+        payload.put("clientName", clientName);
+        payload.put("type", latestDocument == null || latestDocument.getDocumentType() == null ? "UNKNOWN" : latestDocument.getDocumentType().name());
+        payload.put("status", kycCase.getStatus().name());
+        payload.put("level", kycCase.getLevel().name());
+        payload.put("submittedAt", kycCase.getCreatedAt().toString());
+        payload.put("reviewedAt", latestDocument == null || latestDocument.getReviewedAt() == null ? null : latestDocument.getReviewedAt().toString());
+        payload.put("reviewedBy", latestDocument != null && latestDocument.getReviewedAt() != null ? "Admin" : null);
+        payload.put("fileUrl", latestDocument == null ? null : "/admin/kyc/documents/" + latestDocument.getId() + "/download");
+        payload.put("notes", kycCase.getStatusReason());
+        return payload;
+    }
+}

@@ -1,0 +1,46 @@
+app:
+  security:
+    master-key: ${SECURITY_MASTER_KEY}
+    jwt:
+      secret: ${JWT_SECRET}
+      issuer: cpass-platform
+      ttl-seconds: 1800
+  admin-token: ${ADMIN_TOKEN}
+  messaging:
+    exchange: cpass.message.exchange
+    queue: cpass.message.dispatch.queue
+    routing-key: cpass.message.dispatch
+  kyc:
+    validity-days: 365
+    auto-approve-score-threshold: 75
+    external-fallback-score-threshold: 70
+    async-enabled: true
+    messaging:
+      exchange: cpass.kyc.exchange
+      queue: cpass.kyc.queue
+      routing-key: cpass.kyc.process
+    flow:
+      level-0: OTP
+      level-1: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH
+      level-2: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH,FIELD_VERIFICATION
+      level-3: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH,FIELD_VERIFICATION,SOCIAL_GUARANTEE,EXTERNAL_PROVIDER_FALLBACK
+    s3:
+      region: us-east-1
+      bucket: cpass-kyc
+      endpoint: http://localhost:9000
+      access-key: ${S3_ACCESS_KEY}
+      secret-key: ${S3_SECRET_KEY}
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/cpass
+    username: cpass
+    password: cpass
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest

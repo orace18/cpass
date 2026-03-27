@@ -20,12 +20,16 @@ public final class ClientContextHolder {
         return CONTEXT.get();
     }
 
-    public static UUID requireClientId() {
+    public static ClientPrincipal requireClient() {
         ClientPrincipal principal = CONTEXT.get();
         if (principal == null) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "AUTH_REQUIRED", "Client context missing");
         }
-        return principal.clientId();
+        return principal;
+    }
+
+    public static UUID requireClientId() {
+        return requireClient().clientId();
     }
 
     public static void clear() {

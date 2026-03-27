@@ -20,11 +20,15 @@ public class ProviderConfigEntity {
     @Id
     private UUID id;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "provider_type", nullable = false)
+    private ProviderType providerType;
+
     @Column(nullable = false)
     private String code;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column
     private MessageChannel channel;
 
     @Column(nullable = false)
@@ -46,6 +50,9 @@ public class ProviderConfigEntity {
     public void prePersist() {
         if (id == null) {
             id = UUID.randomUUID();
+        }
+        if (providerType == null) {
+            providerType = ProviderType.MESSAGING;
         }
         Instant now = Instant.now();
         createdAt = now;
@@ -71,6 +78,14 @@ public class ProviderConfigEntity {
 
     public void setCode(String code) {
         this.code = code;
+    }
+
+    public ProviderType getProviderType() {
+        return providerType;
+    }
+
+    public void setProviderType(ProviderType providerType) {
+        this.providerType = providerType;
     }
 
     public MessageChannel getChannel() {

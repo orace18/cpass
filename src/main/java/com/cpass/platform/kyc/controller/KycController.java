@@ -1,19 +1,25 @@
 package com.cpass.platform.kyc.controller;
 
-import com.cpass.platform.common.exception.ApiException;
 import com.cpass.platform.common.security.ClientContextHolder;
-import com.cpass.platform.kyc.dto.KycStatusUpdateRequest;
+import com.cpass.platform.common.security.ClientPrincipal;
+import com.cpass.platform.kyc.domain.KycDocumentType;
+import com.cpass.platform.kyc.dto.KycCaseResponse;
+import com.cpass.platform.kyc.dto.KycCheckOrInitRequest;
+import com.cpass.platform.kyc.dto.KycCheckOrInitResponse;
+import com.cpass.platform.kyc.dto.KycContactVerificationRequest;
+import com.cpass.platform.kyc.dto.KycFieldVerificationRequest;
+import com.cpass.platform.kyc.dto.KycSocialValidationRequest;
 import com.cpass.platform.kyc.dto.KycUploadResponse;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.http.MediaType;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -25,27 +31,51 @@ import java.util.UUID;
 public class KycController {
 
     private final KycService kycService;
-    private final String adminToken;
 
-    public KycController(KycService kycService, @Value("${app.admin-token}") String adminToken) {
+    public KycController(KycService kycService) {
         this.kycService = kycService;
-        this.adminToken = adminToken;
     }
 
-    @PostMapping("/documents")
-    public KycUploadResponse upload(@RequestPart("file") MultipartFile file,
+    @PostMapping("/check-or-init")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCheckOrInitResponse checkOrInit(@Valid @RequestBody KycCheckOrInitRequest request) {
+        ClientPrincipal principal = ClientContextHolder.requireClient();
+        return kycService.checkOrInit(principal.clientId(), principal.kycLevelRequired(), request);
+    }
+
+    @GetMapping("/cases/{caseId}")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:read')")
+    public KycCaseResponse getCase(@PathVariable UUID caseId) {
+        return kycService.getCase(ClientContextHolder.requireClientId(), caseId);
+    }
+
+    @PostMapping("/cases/{caseId}/contact-verify")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCaseResponse verifyContact(@PathVariable UUID caseId,
+                                         @Valid @RequestBody KycContactVerificationRequest request) {
+        return kycService.verifyContact(ClientContextHolder.requireClientId(), caseId, request);
+    }
+
+    @PostMapping(value = "/cases/{caseId}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycUploadResponse upload(@PathVariable UUID caseId,
+                                    @RequestParam KycDocumentType documentType,
+                                    @RequestPart("file") MultipartFile file,
                                     @RequestPart(value = "metadata", required = false) String metadata) {
-        UUID clientId = ClientContextHolder.requireClientId();
-        return kycService.upload(clientId, file, metadata);
+        return kycService.upload(ClientContextHolder.requireClientId(), caseId, documentType, file, metadata);
     }
 
-    @PatchMapping("/documents/{documentId}/status")
-    public KycUploadResponse updateStatus(@RequestHeader("X-ADMIN-TOKEN") String token,
-                                          @PathVariable UUID documentId,
-                                          @Valid @RequestBody KycStatusUpdateRequest request) {
-        if (!adminToken.equals(token)) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_ADMIN_TOKEN", "Invalid admin token");
-        }
-        return kycService.updateStatus(documentId, request.status(), request.reason());
+    @PostMapping("/cases/{caseId}/field-verification")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCaseResponse recordFieldVerification(@PathVariable UUID caseId,
+                                                   @Valid @RequestBody KycFieldVerificationRequest request) {
+        return kycService.recordFieldVerification(ClientContextHolder.requireClientId(), caseId, request);
+    }
+
+    @PostMapping("/cases/{caseId}/social-validation")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCaseResponse recordSocialValidation(@PathVariable UUID caseId,
+                                                  @Valid @RequestBody KycSocialValidationRequest request) {
+        return kycService.recordSocialValidation(ClientContextHolder.requireClientId(), caseId, request);
     }
 }

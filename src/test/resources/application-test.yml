@@ -27,6 +27,10 @@ app:
     routing-key: test.routing
   security:
     master-key: 0123456789abcdef0123456789abcdef
+    jwt:
+      secret: test-jwt-secret-value-which-is-long-enough
+      issuer: cpass-test
+      ttl-seconds: 1800
     hmac:
       allowed-skew-seconds: 300
       nonce-ttl-seconds: 300
@@ -40,6 +44,19 @@ app:
     message-template: "Your verification code is {otp}"
     hash-pepper: test-pepper
   kyc:
+    validity-days: 365
+    auto-approve-score-threshold: 75
+    external-fallback-score-threshold: 70
+    async-enabled: false
+    messaging:
+      exchange: test.kyc.exchange
+      queue: test.kyc.queue
+      routing-key: test.kyc.routing
+    flow:
+      level-0: OTP
+      level-1: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH
+      level-2: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH,FIELD_VERIFICATION
+      level-3: OTP,ID_UPLOAD,OCR_EXTRACTION,DOCUMENT_EXPIRY_CHECK,FACE_MATCH,FIELD_VERIFICATION,SOCIAL_GUARANTEE,EXTERNAL_PROVIDER_FALLBACK
     s3:
       endpoint: http://localhost:9000
       region: us-east-1

@@ -2,6 +2,8 @@ package com.cpass.platform.common.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -68,6 +70,34 @@ public class GlobalExceptionHandler {
                 details
         );
         return ResponseEntity.badRequest().body(response);
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ErrorResponse> handleAuthentication(AuthenticationException exception,
+                                                              HttpServletRequest request) {
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.UNAUTHORIZED.value(),
+                "AUTHENTICATION_FAILED",
+                exception.getMessage(),
+                request.getRequestURI(),
+                null
+        );
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException exception,
+                                                            HttpServletRequest request) {
+        ErrorResponse response = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.FORBIDDEN.value(),
+                "ACCESS_DENIED",
+                exception.getMessage(),
+                request.getRequestURI(),
+                null
+        );
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
     }
 
     @ExceptionHandler(Exception.class)

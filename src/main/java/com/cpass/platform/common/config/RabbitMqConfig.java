@@ -30,6 +30,23 @@ public class RabbitMqConfig {
     }
 
     @Bean
+    public Queue kycQueue(@Value("${app.kyc.messaging.queue:cpass.kyc.queue}") String queueName) {
+        return new Queue(queueName, true);
+    }
+
+    @Bean
+    public DirectExchange kycExchange(@Value("${app.kyc.messaging.exchange:cpass.kyc.exchange}") String exchangeName) {
+        return new DirectExchange(exchangeName, true, false);
+    }
+
+    @Bean
+    public Binding kycBinding(Queue kycQueue,
+                              DirectExchange kycExchange,
+                              @Value("${app.kyc.messaging.routing-key:cpass.kyc.process}") String routingKey) {
+        return BindingBuilder.bind(kycQueue).to(kycExchange).with(routingKey);
+    }
+
+    @Bean
     public Jackson2JsonMessageConverter jackson2JsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
     }

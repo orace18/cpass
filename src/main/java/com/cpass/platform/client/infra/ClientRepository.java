@@ -12,5 +12,9 @@ public interface ClientRepository extends JpaRepository<ClientEntity, UUID> {
 
     Optional<ClientEntity> findByName(String name);
 
-    Page<ClientEntity> findByNameContainingIgnoreCase(String search, Pageable pageable);
+    Optional<ClientEntity> findByEmail(String email);
+
+    Optional<ClientEntity> findByClientId(String clientId);
+
+    Page<ClientEntity> findByNameContainingIgnoreCaseOrEmailContainingIgnoreCase(String name, String email, Pageable pageable);
 }

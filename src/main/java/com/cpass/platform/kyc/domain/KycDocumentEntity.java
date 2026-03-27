@@ -5,11 +5,14 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 @Entity
@@ -22,6 +25,14 @@ public class KycDocumentEntity {
     @Column(name = "client_id", nullable = false)
     private UUID clientId;
 
+    @ManyToOne
+    @JoinColumn(name = "kyc_case_id")
+    private KycCaseEntity kycCase;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "document_type")
+    private KycDocumentType documentType;
+
     @Column(name = "file_name", nullable = false)
     private String fileName;
 
@@ -31,6 +42,9 @@ public class KycDocumentEntity {
     @Column(name = "bucket_name", nullable = false)
     private String bucketName;
 
+    @Column(name = "preview_path")
+    private String previewPath;
+
     @Column(name = "content_type")
     private String contentType;
 
@@ -39,7 +53,17 @@ public class KycDocumentEntity {
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
-    private KycStatus status;
+    private KycDocumentStatus status;
+
+    @Column(name = "document_number")
+    private String documentNumber;
+
+    @Column(name = "expiry_date")
+    private LocalDate expiryDate;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "validity_status")
+    private KycDocumentValidityStatus validityStatus;
 
     @Column(name = "metadata_json", columnDefinition = "TEXT")
     private String metadataJson;
@@ -87,6 +111,22 @@ public class KycDocumentEntity {
         this.clientId = clientId;
     }
 
+    public KycCaseEntity getKycCase() {
+        return kycCase;
+    }
+
+    public void setKycCase(KycCaseEntity kycCase) {
+        this.kycCase = kycCase;
+    }
+
+    public KycDocumentType getDocumentType() {
+        return documentType;
+    }
+
+    public void setDocumentType(KycDocumentType documentType) {
+        this.documentType = documentType;
+    }
+
     public String getFileName() {
         return fileName;
     }
@@ -111,6 +151,14 @@ public class KycDocumentEntity {
         this.bucketName = bucketName;
     }
 
+    public String getPreviewPath() {
+        return previewPath;
+    }
+
+    public void setPreviewPath(String previewPath) {
+        this.previewPath = previewPath;
+    }
+
     public String getContentType() {
         return contentType;
     }
@@ -127,12 +175,36 @@ public class KycDocumentEntity {
         this.sizeBytes = sizeBytes;
     }
 
-    public KycStatus getStatus() {
+    public KycDocumentStatus getStatus() {
         return status;
     }
 
-    public void setStatus(KycStatus status) {
+    public void setStatus(KycDocumentStatus status) {
         this.status = status;
+    }
+
+    public String getDocumentNumber() {
+        return documentNumber;
+    }
+
+    public void setDocumentNumber(String documentNumber) {
+        this.documentNumber = documentNumber;
+    }
+
+    public LocalDate getExpiryDate() {
+        return expiryDate;
+    }
+
+    public void setExpiryDate(LocalDate expiryDate) {
+        this.expiryDate = expiryDate;
+    }
+
+    public KycDocumentValidityStatus getValidityStatus() {
+        return validityStatus;
+    }
+
+    public void setValidityStatus(KycDocumentValidityStatus validityStatus) {
+        this.validityStatus = validityStatus;
     }
 
     public String getMetadataJson() {

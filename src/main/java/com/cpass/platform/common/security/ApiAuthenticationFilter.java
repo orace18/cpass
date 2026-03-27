@@ -118,7 +118,9 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
             ClientContextHolder.set(new ClientPrincipal(
                     apiKey.getClient().getId(),
                     apiKey.getClient().getName(),
-                    apiKeyHeader
+                    apiKey.getClient().getClientId(),
+                    apiKey.getClient().getScopes(),
+                    apiKey.getClient().getKycLevelRequired()
             ));
             apiKey.markUsedNow();
             apiKeyRepository.save(apiKey);

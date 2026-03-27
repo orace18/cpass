@@ -3,6 +3,7 @@ package com.cpass.platform.provider.service;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
+import com.cpass.platform.provider.domain.ProviderType;
 import com.cpass.platform.provider.infra.ProviderConfigRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +30,7 @@ public class ProviderRoutingService {
 
     public ProviderDispatchResult dispatch(ProviderMessage message) {
         List<ProviderConfigEntity> candidates = providerConfigRepository
-                .findByChannelAndActiveTrueOrderByPriorityAsc(message.channel());
+                .findByProviderTypeAndChannelAndActiveTrueOrderByPriorityAsc(ProviderType.MESSAGING, message.channel());
 
         if (candidates.isEmpty()) {
             return ProviderDispatchResult.failure("NONE", "No active provider configured for " + message.channel());
@@ -55,7 +56,7 @@ public class ProviderRoutingService {
     }
 
     public List<ProviderConfigEntity> activeProviders(MessageChannel channel) {
-        return providerConfigRepository.findByChannelAndActiveTrueOrderByPriorityAsc(channel);
+        return providerConfigRepository.findByProviderTypeAndChannelAndActiveTrueOrderByPriorityAsc(ProviderType.MESSAGING, channel);
     }
 
     public ProviderDispatchResult directDispatch(String providerCode, MessageChannel channel, ProviderMessage message) {
@@ -63,7 +64,7 @@ public class ProviderRoutingService {
         if (provider == null) {
             return ProviderDispatchResult.failure(providerCode, "Provider not found: " + providerCode);
         }
-        return providerConfigRepository.findByCodeAndChannel(providerCode, channel)
+        return providerConfigRepository.findByProviderTypeAndCodeAndChannel(ProviderType.MESSAGING, providerCode, channel)
                 .map(config -> provider.send(message, config))
                 .orElseGet(() -> ProviderDispatchResult.failure(providerCode,
                         "No config found for provider=" + providerCode + " channel=" + channel));

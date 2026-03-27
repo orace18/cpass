@@ -4,11 +4,12 @@ import com.cpass.platform.admin.dto.ProviderTestRequest;
 import com.cpass.platform.admin.dto.ProviderTestResponse;
 import com.cpass.platform.admin.dto.RouteMobileConfigRequest;
 import com.cpass.platform.admin.dto.RouteMobileConfigResponse;
-import com.cpass.platform.common.exception.ApiException;
+import com.cpass.platform.common.security.AdminSecurityService;
 import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
+import com.cpass.platform.provider.domain.ProviderType;
 import com.cpass.platform.messaging.infra.MessageRepository;
 import com.cpass.platform.provider.infra.ProviderConfigRepository;
 import com.cpass.platform.provider.service.ProviderDispatchResult;
@@ -16,8 +17,6 @@ import com.cpass.platform.provider.service.ProviderRoutingService;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -44,25 +43,25 @@ public class AdminController {
     private static final String RM_CODE    = "ROUTE_MOBILE";
     private static final MessageChannel RM_CHANNEL = MessageChannel.SMS;
 
-    private final ProviderRoutingService   providerRoutingService;
+    private final ProviderRoutingService providerRoutingService;
     private final ProviderConfigRepository providerConfigRepository;
-    private final MessageRepository        messageRepository;
-    private final SecretCryptoService      cryptoService;
-    private final ObjectMapper             objectMapper;
-    private final String                   adminToken;
+    private final MessageRepository messageRepository;
+    private final SecretCryptoService cryptoService;
+    private final ObjectMapper objectMapper;
+    private final AdminSecurityService adminSecurityService;
 
     public AdminController(ProviderRoutingService providerRoutingService,
                            ProviderConfigRepository providerConfigRepository,
                            MessageRepository messageRepository,
                            SecretCryptoService cryptoService,
                            ObjectMapper objectMapper,
-                           @Value("${app.admin-token}") String adminToken) {
-        this.providerRoutingService   = providerRoutingService;
+                           AdminSecurityService adminSecurityService) {
+        this.providerRoutingService = providerRoutingService;
         this.providerConfigRepository = providerConfigRepository;
-        this.messageRepository        = messageRepository;
-        this.cryptoService            = cryptoService;
-        this.objectMapper             = objectMapper;
-        this.adminToken               = adminToken;
+        this.messageRepository = messageRepository;
+        this.cryptoService = cryptoService;
+        this.objectMapper = objectMapper;
+        this.adminSecurityService = adminSecurityService;
     }
 
     // -------------------------------------------------------------------------
@@ -72,18 +71,19 @@ public class AdminController {
     @GetMapping("/providers")
     public List<Map<String, Object>> listProviders(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken) {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
         return providerConfigRepository.findAll().stream()
                 .map(p -> {
                     Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id",         p.getId().toString());
-                    m.put("code",       p.getCode());
-                    m.put("channel",    p.getChannel().name());
-                    m.put("priority",   p.getPriority());
-                    m.put("active",     p.isActive());
+                    m.put("id", p.getId().toString());
+                    m.put("providerType", p.getProviderType().name());
+                    m.put("code", p.getCode());
+                    m.put("channel", p.getChannel() == null ? "KYC" : p.getChannel().name());
+                    m.put("priority", p.getPriority());
+                    m.put("active", p.isActive());
                     m.put("configJson", p.getConfigJson());
-                    m.put("createdAt",  p.getCreatedAt().toString());
-                    m.put("updatedAt",  p.getUpdatedAt().toString());
+                    m.put("createdAt", p.getCreatedAt().toString());
+                    m.put("updatedAt", p.getUpdatedAt().toString());
                     return m;
                 })
                 .toList();
@@ -94,25 +94,26 @@ public class AdminController {
             @RequestHeader("X-ADMIN-TOKEN") String headerToken,
             @PathVariable UUID id,
             @RequestBody Map<String, Object> patch) throws Exception {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
         ProviderConfigEntity entity = providerConfigRepository.findById(id)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                .orElseThrow(() -> new com.cpass.platform.common.exception.ApiException(org.springframework.http.HttpStatus.NOT_FOUND,
                         "PROVIDER_NOT_FOUND", "Provider not found: " + id));
 
-        if (patch.containsKey("active"))     entity.setActive((Boolean) patch.get("active"));
-        if (patch.containsKey("priority"))   entity.setPriority(((Number) patch.get("priority")).intValue());
+        if (patch.containsKey("active")) entity.setActive((Boolean) patch.get("active"));
+        if (patch.containsKey("priority")) entity.setPriority(((Number) patch.get("priority")).intValue());
         if (patch.containsKey("configJson")) entity.setConfigJson((String) patch.get("configJson"));
 
         entity = providerConfigRepository.save(entity);
 
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id",         entity.getId().toString());
-        m.put("code",       entity.getCode());
-        m.put("channel",    entity.getChannel().name());
-        m.put("priority",   entity.getPriority());
-        m.put("active",     entity.isActive());
+        m.put("id", entity.getId().toString());
+        m.put("providerType", entity.getProviderType().name());
+        m.put("code", entity.getCode());
+        m.put("channel", entity.getChannel() == null ? "KYC" : entity.getChannel().name());
+        m.put("priority", entity.getPriority());
+        m.put("active", entity.isActive());
         m.put("configJson", entity.getConfigJson());
-        m.put("updatedAt",  entity.getUpdatedAt().toString());
+        m.put("updatedAt", entity.getUpdatedAt().toString());
         return m;
     }
 
@@ -123,7 +124,7 @@ public class AdminController {
     @PostMapping("/providers/test")
     public ProviderTestResponse testProvider(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
                                              @Valid @RequestBody ProviderTestRequest request) {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
 
         MessageChannel channel = MessageChannel.valueOf(request.channel().toUpperCase());
 
@@ -154,7 +155,7 @@ public class AdminController {
     @GetMapping("/providers/routemobile/config")
     public RouteMobileConfigResponse getRouteMobileConfig(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken) throws Exception {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
         ProviderConfigEntity entity = findRouteMobileEntity();
         return toConfigResponse(entity);
     }
@@ -163,7 +164,7 @@ public class AdminController {
     public RouteMobileConfigResponse saveRouteMobileConfig(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken,
             @Valid @RequestBody RouteMobileConfigRequest request) throws Exception {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
 
         ProviderConfigEntity entity = findRouteMobileEntity();
 
@@ -203,7 +204,7 @@ public class AdminController {
     public List<Map<String, Object>> dailyVolume(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken,
             @RequestParam(defaultValue = "30") int days) {
-        ensureAdminToken(headerToken);
+        adminSecurityService.ensureAdminToken(headerToken);
 
         Instant since = Instant.now().minus(days, ChronoUnit.DAYS);
         List<Object[]> rows = messageRepository.dailyVolume(since);
@@ -222,8 +223,8 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     private ProviderConfigEntity findRouteMobileEntity() {
-        return providerConfigRepository.findByCodeAndChannel(RM_CODE, RM_CHANNEL)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+        return providerConfigRepository.findByProviderTypeAndCodeAndChannel(ProviderType.MESSAGING, RM_CODE, RM_CHANNEL)
+                .orElseThrow(() -> new com.cpass.platform.common.exception.ApiException(org.springframework.http.HttpStatus.NOT_FOUND,
                         "PROVIDER_NOT_FOUND", "No ROUTE_MOBILE SMS provider row found in database"));
     }
 
@@ -235,7 +236,7 @@ public class AdminController {
         return new RouteMobileConfigResponse(
                 entity.getId().toString(),
                 entity.getCode(),
-                entity.getChannel().name(),
+                entity.getChannel() == null ? "KYC" : entity.getChannel().name(),
                 entity.isActive(),
                 cfg.path("username").asText(""),
                 !cfg.path("password").asText("").isBlank(),
@@ -243,11 +244,5 @@ public class AdminController {
                 cfg.path("unitCost").asDouble(0.09),
                 cfg.path("debug").asBoolean(false)
         );
-    }
-
-    private void ensureAdminToken(String headerToken) {
-        if (headerToken == null || !headerToken.equals(adminToken)) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_ADMIN_TOKEN", "Invalid admin token");
-        }
     }
 }
