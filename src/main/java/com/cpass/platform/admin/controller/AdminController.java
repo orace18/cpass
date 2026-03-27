@@ -9,6 +9,7 @@ import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
+import com.cpass.platform.messaging.infra.MessageRepository;
 import com.cpass.platform.provider.infra.ProviderConfigRepository;
 import com.cpass.platform.provider.service.ProviderDispatchResult;
 import com.cpass.platform.provider.service.ProviderRoutingService;
@@ -22,8 +23,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -36,17 +43,20 @@ public class AdminController {
 
     private final ProviderRoutingService   providerRoutingService;
     private final ProviderConfigRepository providerConfigRepository;
+    private final MessageRepository        messageRepository;
     private final SecretCryptoService      cryptoService;
     private final ObjectMapper             objectMapper;
     private final String                   adminToken;
 
     public AdminController(ProviderRoutingService providerRoutingService,
                            ProviderConfigRepository providerConfigRepository,
+                           MessageRepository messageRepository,
                            SecretCryptoService cryptoService,
                            ObjectMapper objectMapper,
                            @Value("${app.admin-token}") String adminToken) {
         this.providerRoutingService   = providerRoutingService;
         this.providerConfigRepository = providerConfigRepository;
+        this.messageRepository        = messageRepository;
         this.cryptoService            = cryptoService;
         this.objectMapper             = objectMapper;
         this.adminToken               = adminToken;
@@ -129,6 +139,28 @@ public class AdminController {
         entity = providerConfigRepository.save(entity);
 
         return toConfigResponse(entity);
+    }
+
+    // -------------------------------------------------------------------------
+    // Stats — daily message volume (last N days)
+    // -------------------------------------------------------------------------
+
+    @GetMapping("/stats/daily-volume")
+    public List<Map<String, Object>> dailyVolume(
+            @RequestHeader("X-ADMIN-TOKEN") String headerToken,
+            @RequestParam(defaultValue = "30") int days) {
+        ensureAdminToken(headerToken);
+
+        Instant since = Instant.now().minus(days, ChronoUnit.DAYS);
+        List<Object[]> rows = messageRepository.dailyVolume(since);
+
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM");
+        return rows.stream()
+                .map(r -> Map.<String, Object>of(
+                        "date",  ((LocalDate) r[0]).format(fmt),
+                        "count", ((Number) r[1]).longValue()
+                ))
+                .toList();
     }
 
     // -------------------------------------------------------------------------
