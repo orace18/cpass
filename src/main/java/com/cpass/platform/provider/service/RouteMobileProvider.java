@@ -1,5 +1,6 @@
 package com.cpass.platform.provider.service;
 
+import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
@@ -13,11 +14,12 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -25,116 +27,186 @@ import java.util.UUID;
 public class RouteMobileProvider implements MessagingProvider {
 
     private static final Logger log = LoggerFactory.getLogger(RouteMobileProvider.class);
-    private static final String DEFAULT_SMS_URL = "https://connect.routemobile.com/rest/send/";
-    private static final String DEFAULT_WA_URL  = "https://api.rmlconnect.net/wba/whatsapp/message";
+
+    private static final String SMS_API_URL = "https://api.rmlconnect.net/bulksms/bulksms";
+    private static final String WA_API_URL  = "https://api.rmlconnect.net/wba/whatsapp/message";
+
+    /** RouteMobile error codes (spec v1.3 — exhaustive) */
+    public static final Map<String, String> RM_ERRORS = Map.ofEntries(
+        Map.entry("1701", "Success — message submitted"),
+        Map.entry("1702", "Invalid URL or missing parameter"),
+        Map.entry("1703", "Invalid RouteMobile credentials (username/password)"),
+        Map.entry("1704", "Invalid message type field"),
+        Map.entry("1705", "Invalid message content"),
+        Map.entry("1706", "Invalid destination number"),
+        Map.entry("1707", "Invalid source / sender ID"),
+        Map.entry("1709", "User validation failed"),
+        Map.entry("1710", "RouteMobile internal error"),
+        Map.entry("1025", "RouteMobile account has insufficient credit"),
+        Map.entry("1715", "Response timeout — do not resubmit"),
+        Map.entry("1032", "DND reject — number is on Do-Not-Disturb list"),
+        Map.entry("1028", "Spam message rejected"),
+        Map.entry("1041", "Duplicate message"),
+        Map.entry("1042", "Explicit DND destination"),
+        Map.entry("1033", "Message template mismatch"),
+        Map.entry("69",   "RouteMobile internal error"),
+        Map.entry("8",    "RouteMobile internal error"),
+        Map.entry("16",   "Server IP is blacklisted by RouteMobile"),
+        Map.entry("18",   "Server IP not whitelisted by RouteMobile")
+    );
+
+    /** GSM-7 Basic Character Set — chars outside this set need type=2 (Unicode). */
+    private static final String GSM7_CHARS =
+        "@\u00A3$\u00A5\u00E8\u00E9\u00F9\u00EC\u00F2\u00C7\n\u00D8\u00F8\r\u00C5\u00E5" +
+        "\u0394_\u03A6\u0393\u039B\u03A9\u03A0\u03A8\u03A3\u0398\u039E\u001B" +
+        " !\"#\u00A4%&'()*+,-./:;<=>?\u00A1ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00C4\u00D6\u00D1\u00DC\u00A7" +
+        "\u00BFabcdefghijklmnopqrstuvwxyz\u00E4\u00F6\u00F1\u00FC\u00E0" +
+        "0123456789\n\r\u000C";
 
     private final ObjectMapper objectMapper;
+    private final SecretCryptoService cryptoService;
     private final HttpClient httpClient;
 
-    public RouteMobileProvider(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
+    public RouteMobileProvider(ObjectMapper objectMapper, SecretCryptoService cryptoService) {
+        this.objectMapper  = objectMapper;
+        this.cryptoService = cryptoService;
+        this.httpClient    = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
     }
 
     @Override
-    public String providerCode() {
-        return "ROUTE_MOBILE";
-    }
+    public String providerCode() { return "ROUTE_MOBILE"; }
 
     @Override
-    public ProviderDispatchResult send(ProviderMessage message, ProviderConfigEntity providerConfig) {
+    public ProviderDispatchResult send(ProviderMessage message, ProviderConfigEntity config) {
         try {
-            JsonNode config = providerConfig.getConfigJson() == null
+            JsonNode cfg = config.getConfigJson() == null
                     ? objectMapper.createObjectNode()
-                    : objectMapper.readTree(providerConfig.getConfigJson());
+                    : objectMapper.readTree(config.getConfigJson());
 
-            if (config.path("forceFailure").asBoolean(false)) {
-                return ProviderDispatchResult.failure(providerCode(), "RouteMobile forced failure");
+            if (cfg.path("forceFailure").asBoolean(false)) {
+                return ProviderDispatchResult.failure(providerCode(), "RouteMobile forced failure (test flag)");
             }
 
-            if (message.channel() == MessageChannel.WHATSAPP) {
-                return sendWhatsApp(message, config);
-            }
-            return sendSms(message, config);
+            return message.channel() == MessageChannel.WHATSAPP
+                    ? sendWhatsApp(message, cfg)
+                    : sendSms(message, cfg);
 
         } catch (Exception e) {
-            log.error("RouteMobile exception for {}: {}", message.recipient(), e.getMessage(), e);
+            log.error("RouteMobile exception recipient={} error={}", message.recipient(), e.getMessage(), e);
             return ProviderDispatchResult.failure(providerCode(), "RouteMobile exception: " + e.getMessage());
         }
     }
 
-    // -------------------------------------------------------------------------
-    // SMS
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // SMS — GET https://api.rmlconnect.net/bulksms/bulksms
+    // Spec v1.3: all params as URL query string, URL-UTF-8 encoded
+    // Response: plain text  <code>|<destination>|<messageId>
+    // =========================================================================
 
-    private ProviderDispatchResult sendSms(ProviderMessage message, JsonNode config) throws Exception {
-        String username = config.path("username").asText();
-        String password = config.path("password").asText();
-        String senderId = config.path("senderId").asText("CPASS");
-        String apiUrl   = config.path("apiUrl").asText(DEFAULT_SMS_URL);
-        BigDecimal cost = BigDecimal.valueOf(config.path("unitCost").asDouble(0.10));
+    private ProviderDispatchResult sendSms(ProviderMessage message, JsonNode cfg) throws Exception {
+        String username = cfg.path("username").asText("").trim();
+        String encPwd   = cfg.path("password").asText("").trim();
+        String senderId = cfg.path("senderId").asText("CPASS").trim();
+        boolean debug   = cfg.path("debug").asBoolean(false);
+        BigDecimal cost = BigDecimal.valueOf(cfg.path("unitCost").asDouble(0.09));
 
-        if (username.isBlank() || password.isBlank()) {
-            return ProviderDispatchResult.failure(providerCode(), "RouteMobile SMS credentials not configured");
+        if (username.isEmpty() || encPwd.isEmpty()) {
+            return ProviderDispatchResult.failure(providerCode(),
+                "RouteMobile SMS credentials not configured — set username/password via admin panel");
         }
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("userid",         username);
-        body.put("password",       password);
-        body.put("mobile",         message.recipient());
-        body.put("senderid",       senderId);
-        body.put("msg",            message.rawMessage());
-        body.put("sendMethod",     "quick");
-        body.put("msgType",        "text");
-        body.put("duplicatecheck", "true");
-        body.put("output",         "json");
+        String password = decryptPassword(encPwd);
+
+        // type=0 plain GSM-7, type=2 Unicode — auto-detected
+        int type = isGsm7(message.rawMessage()) ? 0 : 2;
+
+        String url = SMS_API_URL
+                + "?username="    + encode(username)
+                + "&password="    + encode(password)
+                + "&type="        + type
+                + "&dlr=1"
+                + "&destination=" + encode(message.recipient())
+                + "&source="      + encode(senderId)
+                + "&message="     + encode(message.rawMessage());
+
+        log.info("RouteMobile SMS request: url={}",
+            SMS_API_URL + "?username=" + encode(username) + "&password=***"
+            + "&type=" + type + "&dlr=1"
+            + "&destination=" + encode(message.recipient())
+            + "&source=" + encode(senderId)
+            + "&message=" + (debug ? encode(message.rawMessage()) : "<" + message.rawMessage().length() + "chars>"));
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiUrl))
+                .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(15))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                .GET()
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        String rawBody = response.body() == null ? "" : response.body().trim();
 
-        if (response.statusCode() != 200) {
-            return ProviderDispatchResult.failure(providerCode(), "RouteMobile SMS HTTP error: " + response.statusCode());
+        log.info("RouteMobile SMS response: httpStatus={} raw={}", response.statusCode(), rawBody);
+
+        return parseSmsResponse(rawBody, message.recipient(), cost);
+    }
+
+    /**
+     * Parses RouteMobile pipe-delimited response.
+     * Single:  {@code 1701|+22961000001|abc123}
+     * Batch:   {@code 1701|dest1|id1,1706|dest2|,1701|dest3|id3}
+     * Only 1709 is retryable. All others (incl. 1715) are permanent failures per spec.
+     */
+    ProviderDispatchResult parseSmsResponse(String rawBody, String recipient, BigDecimal cost) {
+        if (rawBody.isBlank()) {
+            log.error("RouteMobile empty response for recipient={}", recipient);
+            return ProviderDispatchResult.failure(providerCode(), "Empty response from RouteMobile");
         }
 
-        JsonNode responseBody = objectMapper.readTree(response.body());
-        JsonNode first = responseBody.path("response").path(0);
-        String status = first.path("status").asText("");
+        String first = rawBody.split(",")[0].trim();
+        String[] parts = first.split("\\|");
 
-        if ("SUCCESS".equalsIgnoreCase(status)) {
-            String messageId = first.path("messageid").asText("rm_" + UUID.randomUUID());
-            log.info("RouteMobile SMS sent to {} - messageId={}", message.recipient(), messageId);
+        if (parts.length < 2) {
+            log.error("RouteMobile unexpected response format rawBody={}", rawBody);
+            return ProviderDispatchResult.failure(providerCode(),
+                "Unexpected RouteMobile response: " + rawBody);
+        }
+
+        String code      = parts[0].trim();
+        String messageId = parts.length >= 3 ? parts[2].trim() : null;
+
+        if ("1701".equals(code)) {
+            log.info("RouteMobile SMS success recipient={} messageId={}", recipient, messageId);
             return ProviderDispatchResult.success(providerCode(), messageId, cost);
         }
 
-        String error = first.path("error").asText(status);
-        log.warn("RouteMobile SMS failed to {} - error={}", message.recipient(), error);
-        return ProviderDispatchResult.failure(providerCode(), "RouteMobile SMS error: " + error);
+        String desc = RM_ERRORS.getOrDefault(code, "Unknown RouteMobile code: " + code);
+        log.warn("RouteMobile SMS failed code={} description={} recipient={}", code, desc, recipient);
+
+        // Only code 1709 is retryable per spec
+        return ProviderDispatchResult.failure(providerCode(),
+            "[" + code + "] " + desc + ("1709".equals(code) ? " — RETRIABLE" : ""));
     }
 
-    // -------------------------------------------------------------------------
-    // WhatsApp
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // WhatsApp — unchanged logic, improved logging
+    // =========================================================================
 
-    private ProviderDispatchResult sendWhatsApp(ProviderMessage message, JsonNode config) throws Exception {
-        String apiKey   = config.path("apiKey").asText();
-        String senderId = config.path("senderId").asText();
-        String apiUrl   = config.path("waApiUrl").asText(DEFAULT_WA_URL);
-        String language = config.path("templateLanguage").asText("en");
-        BigDecimal cost = BigDecimal.valueOf(config.path("unitCost").asDouble(0.04));
+    private ProviderDispatchResult sendWhatsApp(ProviderMessage message, JsonNode cfg) throws Exception {
+        String apiKey   = cfg.path("apiKey").asText("").trim();
+        String senderId = cfg.path("senderId").asText("").trim();
+        String apiUrl   = cfg.path("waApiUrl").asText(WA_API_URL);
+        String language = cfg.path("templateLanguage").asText("en");
+        BigDecimal cost = BigDecimal.valueOf(cfg.path("unitCost").asDouble(0.04));
 
-        if (apiKey.isBlank()) {
-            return ProviderDispatchResult.failure(providerCode(), "RouteMobile WhatsApp apiKey not configured");
+        if (apiKey.isEmpty()) {
+            return ProviderDispatchResult.failure(providerCode(),
+                "RouteMobile WhatsApp apiKey not configured");
         }
 
         String requestBody = buildWhatsAppPayload(message, senderId, language);
+        log.info("RouteMobile WhatsApp request: recipient={} template={}", message.recipient(), message.templateCode());
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(apiUrl))
@@ -145,15 +217,17 @@ public class RouteMobileProvider implements MessagingProvider {
                 .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("RouteMobile WhatsApp response: httpStatus={} body={}", response.statusCode(), response.body());
 
         if (response.statusCode() != 200 && response.statusCode() != 202) {
-            return ProviderDispatchResult.failure(providerCode(), "RouteMobile WhatsApp HTTP error: " + response.statusCode());
+            return ProviderDispatchResult.failure(providerCode(),
+                "RouteMobile WhatsApp HTTP " + response.statusCode());
         }
 
-        JsonNode responseBody = objectMapper.readTree(response.body());
-        String messageId = responseBody.path("messages").path(0).path("id")
+        JsonNode respBody = objectMapper.readTree(response.body());
+        String messageId  = respBody.path("messages").path(0).path("id")
                 .asText("rm_wa_" + UUID.randomUUID());
-        log.info("RouteMobile WhatsApp sent to {} - messageId={}", message.recipient(), messageId);
+        log.info("RouteMobile WhatsApp success recipient={} messageId={}", message.recipient(), messageId);
         return ProviderDispatchResult.success(providerCode(), messageId, cost);
     }
 
@@ -172,7 +246,7 @@ public class RouteMobileProvider implements MessagingProvider {
 
             if (message.templateParams() != null && !message.templateParams().isEmpty()) {
                 ArrayNode components = objectMapper.createArrayNode();
-                ObjectNode bodyComp = objectMapper.createObjectNode();
+                ObjectNode bodyComp  = objectMapper.createObjectNode();
                 bodyComp.put("type", "body");
                 ArrayNode parameters = objectMapper.createArrayNode();
                 for (Map.Entry<String, String> entry : message.templateParams().entrySet()) {
@@ -192,7 +266,35 @@ public class RouteMobileProvider implements MessagingProvider {
             text.put("body", message.rawMessage());
             payload.set("text", text);
         }
-
         return objectMapper.writeValueAsString(payload);
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private boolean isGsm7(String text) {
+        if (text == null || text.isEmpty()) return true;
+        for (char c : text.toCharArray()) {
+            if (GSM7_CHARS.indexOf(c) < 0) return false;
+        }
+        return true;
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
+    }
+
+    private String decryptPassword(String stored) {
+        try {
+            return cryptoService.decrypt(stored);
+        } catch (Exception e) {
+            log.debug("RouteMobile: password not encrypted, using as-is (dev/initial setup)");
+            return stored;
+        }
+    }
+
+    public static String describeError(String code) {
+        return RM_ERRORS.getOrDefault(code, "Unknown RouteMobile error code: " + code);
     }
 }
