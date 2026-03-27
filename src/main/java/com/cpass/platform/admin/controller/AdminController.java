@@ -19,6 +19,8 @@ import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -30,6 +32,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -60,6 +63,57 @@ public class AdminController {
         this.cryptoService            = cryptoService;
         this.objectMapper             = objectMapper;
         this.adminToken               = adminToken;
+    }
+
+    // -------------------------------------------------------------------------
+    // Providers CRUD — list + patch (toggle active / priority)
+    // -------------------------------------------------------------------------
+
+    @GetMapping("/providers")
+    public List<Map<String, Object>> listProviders(
+            @RequestHeader("X-ADMIN-TOKEN") String headerToken) {
+        ensureAdminToken(headerToken);
+        return providerConfigRepository.findAll().stream()
+                .map(p -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("id",         p.getId().toString());
+                    m.put("code",       p.getCode());
+                    m.put("channel",    p.getChannel().name());
+                    m.put("priority",   p.getPriority());
+                    m.put("active",     p.isActive());
+                    m.put("configJson", p.getConfigJson());
+                    m.put("createdAt",  p.getCreatedAt().toString());
+                    m.put("updatedAt",  p.getUpdatedAt().toString());
+                    return m;
+                })
+                .toList();
+    }
+
+    @PatchMapping("/providers/{id}")
+    public Map<String, Object> patchProvider(
+            @RequestHeader("X-ADMIN-TOKEN") String headerToken,
+            @PathVariable UUID id,
+            @RequestBody Map<String, Object> patch) throws Exception {
+        ensureAdminToken(headerToken);
+        ProviderConfigEntity entity = providerConfigRepository.findById(id)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "PROVIDER_NOT_FOUND", "Provider not found: " + id));
+
+        if (patch.containsKey("active"))     entity.setActive((Boolean) patch.get("active"));
+        if (patch.containsKey("priority"))   entity.setPriority(((Number) patch.get("priority")).intValue());
+        if (patch.containsKey("configJson")) entity.setConfigJson((String) patch.get("configJson"));
+
+        entity = providerConfigRepository.save(entity);
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",         entity.getId().toString());
+        m.put("code",       entity.getCode());
+        m.put("channel",    entity.getChannel().name());
+        m.put("priority",   entity.getPriority());
+        m.put("active",     entity.isActive());
+        m.put("configJson", entity.getConfigJson());
+        m.put("updatedAt",  entity.getUpdatedAt().toString());
+        return m;
     }
 
     // -------------------------------------------------------------------------
