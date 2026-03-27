@@ -35,6 +35,21 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getServletPath();
+        if (path == null || path.isBlank()) {
+            path = request.getRequestURI();
+        }
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+
+        return "/auth/login".equals(path)
+                || path.startsWith("/admin")
+                || path.startsWith("/clients");
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
