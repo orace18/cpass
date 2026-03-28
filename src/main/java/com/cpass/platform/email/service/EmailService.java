@@ -38,7 +38,7 @@ public class EmailService {
             helper.setSubject(subject);
             helper.setText(body, false);
             if (settings.fromName() != null && !settings.fromName().isBlank()) {
-                helper.setFrom(new InternetAddress(settings.fromEmail(), settings.fromName(), StandardCharsets.UTF_8));
+                helper.setFrom(new InternetAddress(settings.fromEmail(), settings.fromName(), StandardCharsets.UTF_8.name()));
             } else {
                 helper.setFrom(settings.fromEmail());
             }
