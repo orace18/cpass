@@ -50,13 +50,18 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
-        return path.startsWith("/actuator/health")
+        if (path.startsWith("/actuator/health")
                 || path.startsWith("/v3/api-docs")
                 || path.startsWith("/swagger-ui")
                 || path.startsWith("/clients")
                 || path.startsWith("/admin")
                 || path.startsWith("/auth")
-                || path.startsWith("/webhooks/delivery");
+                || path.startsWith("/webhooks/delivery")) {
+            return true;
+        }
+        // Requests with a Bearer token are authenticated by ClientJwtAuthenticationFilter
+        String authorization = request.getHeader(org.springframework.http.HttpHeaders.AUTHORIZATION);
+        return authorization != null && authorization.startsWith("Bearer ");
     }
 
     @Override
