@@ -12,8 +12,6 @@ import com.cpass.platform.otp.infra.OtpAuditRepository;
 import com.cpass.platform.provider.domain.ProviderMessage;
 import com.cpass.platform.provider.service.ProviderDispatchResult;
 import com.cpass.platform.provider.service.ProviderRoutingService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,18 +20,15 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class OtpService {
 
-    private final StringRedisTemplate redisTemplate;
-    private final ObjectMapper objectMapper;
     private final OtpAuditRepository otpAuditRepository;
     private final ProviderRoutingService providerRoutingService;
     private final QuotaService quotaService;
@@ -41,15 +36,11 @@ public class OtpService {
     private final OtpProperties properties;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public OtpService(StringRedisTemplate redisTemplate,
-                      ObjectMapper objectMapper,
-                      OtpAuditRepository otpAuditRepository,
+    public OtpService(OtpAuditRepository otpAuditRepository,
                       ProviderRoutingService providerRoutingService,
                       QuotaService quotaService,
                       UsageService usageService,
                       OtpProperties properties) {
-        this.redisTemplate = redisTemplate;
-        this.objectMapper = objectMapper;
         this.otpAuditRepository = otpAuditRepository;
         this.providerRoutingService = providerRoutingService;
         this.quotaService = quotaService;
@@ -67,16 +58,6 @@ public class OtpService {
         String hash = hashOtp(salt, otp);
         Instant expiresAt = Instant.now().plusSeconds(properties.ttlSeconds());
         UUID reference = UUID.randomUUID();
-
-        OtpCacheRecord record = new OtpCacheRecord(
-                destination,
-                MessageChannel.SMS,
-                hash,
-                salt,
-                properties.maxVerifyAttempts(),
-                expiresAt
-        );
-        saveCache(clientId, reference, record);
 
         OtpAuditEntity audit = new OtpAuditEntity();
         audit.setClientId(clientId);
@@ -102,7 +83,6 @@ public class OtpService {
         if (!dispatchResult.success()) {
             audit.setStatus(OtpStatus.FAILED);
             otpAuditRepository.save(audit);
-            redisTemplate.delete(otpKey(clientId, reference));
             throw new ApiException(HttpStatus.BAD_GATEWAY, "OTP_PROVIDER_FAILED", dispatchResult.error());
         }
 
@@ -112,96 +92,47 @@ public class OtpService {
 
     @Transactional
     public OtpVerifyResponse verifyOtp(UUID clientId, UUID referenceId, String otpCode) {
-        Optional<OtpCacheRecord> recordOptional = loadCache(clientId, referenceId);
-        if (recordOptional.isEmpty()) {
-            markAudit(clientId, referenceId, OtpStatus.EXPIRED, 0);
-            throw new ApiException(HttpStatus.BAD_REQUEST, "OTP_EXPIRED", "OTP expired or invalid");
+        OtpAuditEntity audit = otpAuditRepository.findByReferenceIdAndClientId(referenceId, clientId)
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "OTP_EXPIRED", "OTP expired or invalid"));
+
+        if (audit.getStatus() != OtpStatus.SENT || audit.getExpiresAt().isBefore(Instant.now())) {
+            audit.setStatus(OtpStatus.EXPIRED);
+            otpAuditRepository.save(audit);
+            throw new ApiException(HttpStatus.BAD_REQUEST, "OTP_EXPIRED", "OTP expired or already used");
         }
 
-        OtpCacheRecord record = recordOptional.get();
-        if (record.expiresAt().isBefore(Instant.now())) {
-            redisTemplate.delete(otpKey(clientId, referenceId));
-            markAudit(clientId, referenceId, OtpStatus.EXPIRED, 0);
-            throw new ApiException(HttpStatus.BAD_REQUEST, "OTP_EXPIRED", "OTP expired");
+        if (audit.getOtpHash().equals(hashOtp(audit.getSalt(), otpCode))) {
+            audit.setStatus(OtpStatus.VERIFIED);
+            audit.setVerifiedAt(Instant.now());
+            otpAuditRepository.save(audit);
+            return new OtpVerifyResponse(true, audit.getAttemptsRemaining());
         }
 
-        if (record.hash().equals(hashOtp(record.salt(), otpCode))) {
-            redisTemplate.delete(otpKey(clientId, referenceId));
-            markAudit(clientId, referenceId, OtpStatus.VERIFIED, record.attemptsRemaining());
-            return new OtpVerifyResponse(true, record.attemptsRemaining());
-        }
-
-        int remaining = record.attemptsRemaining() - 1;
+        int remaining = audit.getAttemptsRemaining() - 1;
+        audit.setAttemptsRemaining(remaining);
         if (remaining <= 0) {
-            redisTemplate.delete(otpKey(clientId, referenceId));
-            markAudit(clientId, referenceId, OtpStatus.FAILED, 0);
+            audit.setStatus(OtpStatus.FAILED);
+            otpAuditRepository.save(audit);
             return new OtpVerifyResponse(false, 0);
         }
 
-        saveCache(clientId, referenceId, new OtpCacheRecord(
-                record.destination(),
-                record.channel(),
-                record.hash(),
-                record.salt(),
-                remaining,
-                record.expiresAt()
-        ));
-        markAudit(clientId, referenceId, OtpStatus.SENT, remaining);
+        otpAuditRepository.save(audit);
         return new OtpVerifyResponse(false, remaining);
     }
 
     private void assertSendAllowed(UUID clientId, String destination) {
-        String cooldownKey = cooldownKey(clientId, destination);
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(cooldownKey))) {
+        Instant cooldownThreshold = Instant.now().minusSeconds(properties.cooldownSeconds());
+        List<OtpAuditEntity> recent = otpAuditRepository
+                .findByClientIdAndDestinationAndStatusAndCreatedAtAfter(clientId, destination, OtpStatus.SENT, cooldownThreshold);
+        if (!recent.isEmpty()) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "OTP_COOLDOWN", "Please wait before requesting another OTP");
         }
 
-        String retryKey = retryKey(clientId, destination);
-        Long count = redisTemplate.opsForValue().increment(retryKey);
-        if (count != null && count == 1L) {
-            redisTemplate.expire(retryKey, Duration.ofSeconds(properties.ttlSeconds()));
-        }
-        if (count != null && count > properties.maxSendRetries()) {
+        Instant retryThreshold = Instant.now().minusSeconds(properties.ttlSeconds());
+        long count = otpAuditRepository.countByClientIdAndDestinationAndCreatedAtAfter(clientId, destination, retryThreshold);
+        if (count >= properties.maxSendRetries()) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "OTP_RETRY_LIMIT", "Max OTP retries exceeded");
         }
-
-        redisTemplate.opsForValue().set(cooldownKey, "1", Duration.ofSeconds(properties.cooldownSeconds()));
-    }
-
-    private void saveCache(UUID clientId, UUID referenceId, OtpCacheRecord record) {
-        try {
-            String json = objectMapper.writeValueAsString(record);
-            redisTemplate.opsForValue().set(
-                    otpKey(clientId, referenceId),
-                    json,
-                    Duration.ofSeconds(properties.ttlSeconds())
-            );
-        } catch (Exception exception) {
-            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "OTP_STORE_FAILED", "Failed to store OTP");
-        }
-    }
-
-    private Optional<OtpCacheRecord> loadCache(UUID clientId, UUID referenceId) {
-        try {
-            String value = redisTemplate.opsForValue().get(otpKey(clientId, referenceId));
-            if (value == null) {
-                return Optional.empty();
-            }
-            return Optional.of(objectMapper.readValue(value, OtpCacheRecord.class));
-        } catch (Exception exception) {
-            return Optional.empty();
-        }
-    }
-
-    private void markAudit(UUID clientId, UUID referenceId, OtpStatus status, int attemptsRemaining) {
-        otpAuditRepository.findByReferenceIdAndClientId(referenceId, clientId).ifPresent(audit -> {
-            audit.setStatus(status);
-            audit.setAttemptsRemaining(attemptsRemaining);
-            if (status == OtpStatus.VERIFIED) {
-                audit.setVerifiedAt(Instant.now());
-            }
-            otpAuditRepository.save(audit);
-        });
     }
 
     private String hashOtp(String salt, String otpCode) {
@@ -220,17 +151,5 @@ public class OtpService {
             builder.append(secureRandom.nextInt(10));
         }
         return builder.toString();
-    }
-
-    private String otpKey(UUID clientId, UUID referenceId) {
-        return "otp:data:" + clientId + ":" + referenceId;
-    }
-
-    private String cooldownKey(UUID clientId, String destination) {
-        return "otp:cooldown:" + clientId + ":" + destination;
-    }
-
-    private String retryKey(UUID clientId, String destination) {
-        return "otp:retry:" + clientId + ":" + destination;
     }
 }
