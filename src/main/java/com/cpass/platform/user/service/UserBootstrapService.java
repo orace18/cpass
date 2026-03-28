@@ -38,6 +38,7 @@ public class UserBootstrapService implements ApplicationRunner {
         userRepository.findByEmail(email).orElseGet(() -> {
             UserEntity user = new UserEntity();
             user.setEmail(email);
+            user.setTwoFactorEmail(email);
             user.setPasswordHash(passwordEncoder.encode(adminBootstrapProperties.password()));
             user.setRole(UserRole.ADMIN);
             user.setEnabled(true);

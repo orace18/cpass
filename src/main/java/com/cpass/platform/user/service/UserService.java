@@ -10,6 +10,7 @@ import com.cpass.platform.user.domain.PasswordResetTokenEntity;
 import com.cpass.platform.user.domain.UserEntity;
 import com.cpass.platform.user.domain.UserRole;
 import com.cpass.platform.user.dto.CreateUserRequest;
+import com.cpass.platform.user.dto.UpdateProfileRequest;
 import com.cpass.platform.user.dto.UpdateUserRequest;
 import com.cpass.platform.user.dto.UserResponse;
 import com.cpass.platform.user.infra.PasswordResetTokenRepository;
@@ -74,6 +75,7 @@ public class UserService {
 
         UserEntity user = new UserEntity();
         user.setEmail(email);
+        user.setTwoFactorEmail(email);
         user.setRole(request.role());
         user.setClientId(resolveClientId(request.role(), request.clientId()));
         user.setEnabled(request.enabled() == null || request.enabled());
@@ -87,11 +89,16 @@ public class UserService {
     @Transactional
     public UserResponse updateUser(UUID userId, UpdateUserRequest request) {
         UserEntity user = requireUser(userId);
+        String previousEmail = user.getEmail();
+        String previousTwoFactorEmail = resolveTwoFactorEmail(user);
 
         if (request.email() != null && !request.email().isBlank()) {
             String email = normalizeEmail(request.email());
             assertEmailAvailable(email, userId);
             user.setEmail(email);
+            if (previousTwoFactorEmail.equalsIgnoreCase(previousEmail)) {
+                user.setTwoFactorEmail(email);
+            }
         }
 
         UserRole role = request.role() == null ? user.getRole() : request.role();
@@ -110,12 +117,43 @@ public class UserService {
     }
 
     @Transactional
+    public UserResponse updateProfile(UserPrincipal principal, UpdateProfileRequest request) {
+        UserEntity user = requireUser(principal.userId());
+        String previousEmail = user.getEmail();
+        String previousTwoFactorEmail = resolveTwoFactorEmail(user);
+
+        if (request.email() != null && !request.email().isBlank()) {
+            String email = normalizeEmail(request.email());
+            assertEmailAvailable(email, user.getId());
+            user.setEmail(email);
+            if (previousTwoFactorEmail.equalsIgnoreCase(previousEmail)) {
+                user.setTwoFactorEmail(email);
+            }
+        }
+
+        if (request.twoFactorEmail() != null) {
+            user.setTwoFactorEmail(
+                    request.twoFactorEmail().isBlank()
+                            ? user.getEmail()
+                            : normalizeEmail(request.twoFactorEmail())
+            );
+        }
+
+        if (user.getTwoFactorEmail() == null || user.getTwoFactorEmail().isBlank()) {
+            user.setTwoFactorEmail(user.getEmail());
+        }
+
+        return toResponse(userRepository.save(user));
+    }
+
+    @Transactional
     public UserEntity onboardClientOwner(ClientEntity client) {
         String email = normalizeEmail(client.getEmail());
         assertEmailAvailable(email, null);
 
         UserEntity user = new UserEntity();
         user.setEmail(email);
+        user.setTwoFactorEmail(email);
         user.setRole(UserRole.CLIENT);
         user.setClientId(client.getId());
         user.setEnabled(client.isEnabled());
@@ -181,11 +219,13 @@ public class UserService {
         return new UserResponse(
                 user.getId().toString(),
                 user.getEmail(),
+                resolveTwoFactorEmail(user),
                 user.getRole().name(),
                 user.getClientId() == null ? null : user.getClientId().toString(),
                 clientName,
                 user.isEnabled(),
                 user.getCreatedAt() == null ? null : user.getCreatedAt().toString(),
+                true,
                 displayName
         );
     }
@@ -236,6 +276,13 @@ public class UserService {
 
     private String normalizeEmail(String email) {
         return email.trim().toLowerCase();
+    }
+
+    public String resolveTwoFactorEmail(UserEntity user) {
+        if (user.getTwoFactorEmail() == null || user.getTwoFactorEmail().isBlank()) {
+            return user.getEmail();
+        }
+        return normalizeEmail(user.getTwoFactorEmail());
     }
 
     private String randomToken(int bytes) {

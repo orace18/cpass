@@ -3,6 +3,7 @@ package com.cpass.platform.user.controller;
 import com.cpass.platform.common.security.UserContextHolder;
 import com.cpass.platform.user.dto.BasicResponse;
 import com.cpass.platform.user.dto.ChangePasswordRequest;
+import com.cpass.platform.user.dto.UpdateProfileRequest;
 import com.cpass.platform.user.dto.UserResponse;
 import com.cpass.platform.user.service.UserAuthService;
 import com.cpass.platform.user.service.UserService;
@@ -31,6 +32,11 @@ public class ProfileController {
     @GetMapping
     public UserResponse me() {
         return userService.currentUser(UserContextHolder.requireUser());
+    }
+
+    @PutMapping
+    public UserResponse updateProfile(@Valid @RequestBody UpdateProfileRequest request) {
+        return userService.updateProfile(UserContextHolder.requireUser(), request);
     }
 
     @PutMapping("/password")
