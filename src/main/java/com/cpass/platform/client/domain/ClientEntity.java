@@ -5,6 +5,7 @@ import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Convert;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
@@ -39,8 +40,8 @@ public class ClientEntity {
     private String secretHash;
 
     @ElementCollection(fetch = FetchType.EAGER)
-    @Enumerated(EnumType.STRING)
     @CollectionTable(name = "client_scopes", joinColumns = @JoinColumn(name = "client_id"))
+    @Convert(converter = ClientScopeConverter.class)
     @Column(name = "scope", nullable = false)
     private Set<ClientScope> scopes = new LinkedHashSet<>();
 

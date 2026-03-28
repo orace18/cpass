@@ -22,8 +22,12 @@ public enum ClientScope {
     }
 
     public static ClientScope fromScope(String scope) {
+        if (scope == null || scope.isBlank()) {
+            throw new IllegalArgumentException("Unknown scope: " + scope);
+        }
+        String normalized = scope.trim();
         for (ClientScope candidate : values()) {
-            if (candidate.scope.equals(scope)) {
+            if (candidate.scope.equalsIgnoreCase(normalized) || candidate.name().equalsIgnoreCase(normalized)) {
                 return candidate;
             }
         }

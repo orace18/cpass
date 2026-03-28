@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,12 +60,13 @@ public class AdminMessageService {
         int resolvedPage = Math.max(1, page);
         int resolvedPageSize = Math.min(Math.max(1, pageSize), 100);
 
-        Page<MessageEntity> result = messageRepository.searchAdminMessages(
+        Page<MessageEntity> result = messageRepository.findAll(
+                buildSpecification(
                 normalizeStatus(status),
                 normalizeProvider(provider),
                 clientId,
                 parseFrom(from),
-                parseToExclusive(to),
+                parseToExclusive(to)),
                 PageRequest.of(resolvedPage - 1, resolvedPageSize, Sort.by(Sort.Direction.DESC, "createdAt"))
         );
 
@@ -184,5 +186,44 @@ public class AdminMessageService {
             return "PENDING";
         }
         return status.name();
+    }
+
+    private Specification<MessageEntity> buildSpecification(MessageStatus status,
+                                                            String providerCode,
+                                                            UUID clientId,
+                                                            Instant fromAt,
+                                                            Instant toAt) {
+        return Specification.where(hasStatus(status))
+                .and(hasProvider(providerCode))
+                .and(hasClient(clientId))
+                .and(createdAfterOrAt(fromAt))
+                .and(createdBefore(toAt));
+    }
+
+    private Specification<MessageEntity> hasStatus(MessageStatus status) {
+        return (root, query, criteriaBuilder) ->
+                status == null ? criteriaBuilder.conjunction() : criteriaBuilder.equal(root.get("status"), status);
+    }
+
+    private Specification<MessageEntity> hasProvider(String providerCode) {
+        return (root, query, criteriaBuilder) ->
+                providerCode == null
+                        ? criteriaBuilder.conjunction()
+                        : criteriaBuilder.equal(criteriaBuilder.upper(root.get("providerCode")), providerCode);
+    }
+
+    private Specification<MessageEntity> hasClient(UUID clientId) {
+        return (root, query, criteriaBuilder) ->
+                clientId == null ? criteriaBuilder.conjunction() : criteriaBuilder.equal(root.get("clientId"), clientId);
+    }
+
+    private Specification<MessageEntity> createdAfterOrAt(Instant fromAt) {
+        return (root, query, criteriaBuilder) ->
+                fromAt == null ? criteriaBuilder.conjunction() : criteriaBuilder.greaterThanOrEqualTo(root.get("createdAt"), fromAt);
+    }
+
+    private Specification<MessageEntity> createdBefore(Instant toAt) {
+        return (root, query, criteriaBuilder) ->
+                toAt == null ? criteriaBuilder.conjunction() : criteriaBuilder.lessThan(root.get("createdAt"), toAt);
     }
 }
