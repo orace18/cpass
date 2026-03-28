@@ -78,11 +78,12 @@ public class UserAuthService {
         challenge.setExpiresAt(now.plusSeconds(ttlSeconds));
         UserTwoFactorChallengeEntity saved = userTwoFactorChallengeRepository.save(challenge);
 
-        emailService.sendOtp(user.getClientId(), user.getEmail(), code);
+        String twoFactorEmail = userService.resolveTwoFactorEmail(user);
+        emailService.sendOtp(user.getClientId(), twoFactorEmail, code);
         return new TwoFactorChallengeResponse(
                 saved.getId().toString(),
                 ttlSeconds,
-                maskEmail(user.getEmail()),
+                maskEmail(twoFactorEmail),
                 "A verification code has been sent to your email."
         );
     }
