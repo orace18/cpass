@@ -8,8 +8,11 @@ import com.cpass.platform.client.dto.CreateClientRequest;
 import com.cpass.platform.client.dto.UpdateClientRequest;
 import com.cpass.platform.client.service.ClientService;
 import com.cpass.platform.common.security.AdminSecurityService;
+import com.cpass.platform.kyc.domain.KycLevel;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -23,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +35,8 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/clients")
 public class ClientController {
+
+    private static final Logger log = LoggerFactory.getLogger(ClientController.class);
 
     private final ClientService clientService;
     private final UsageService usageService;
@@ -96,7 +102,7 @@ public class ClientController {
 
     private Map<String, Object> toMap(ClientEntity client) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("id", client.getId().toString());
+        payload.put("id", client.getId() == null ? null : client.getId().toString());
         payload.put("name", client.getName());
         payload.put("email", client.getEmail());
         payload.put("clientId", client.getClientId());
@@ -105,17 +111,36 @@ public class ClientController {
         payload.put("webhookUrl", client.getWebhookUrl());
         payload.put("rateLimitPerMinute", client.getRateLimitPerMinute());
         payload.put("scopes", clientService.scopeValues(client));
-        payload.put("kycLevelRequired", client.getKycLevelRequired().name());
+        payload.put("kycLevelRequired", client.getKycLevelRequired() == null
+                ? KycLevel.LEVEL_0.name()
+                : client.getKycLevelRequired().name());
         payload.put("ipWhitelist", clientService.ipWhitelist(client));
         payload.put("quotas", Map.of(
                 "sms", client.getSmsHardQuota(),
                 "whatsapp", client.getWhatsappHardQuota()
         ));
         payload.put("usage", Map.of(
-                "sms", usageService.currentMonthUsage(client.getId(), MessageChannel.SMS),
-                "whatsapp", usageService.currentMonthUsage(client.getId(), MessageChannel.WHATSAPP)
+                "sms", safeCurrentMonthUsage(client.getId(), MessageChannel.SMS),
+                "whatsapp", safeCurrentMonthUsage(client.getId(), MessageChannel.WHATSAPP)
         ));
-        payload.put("createdAt", client.getCreatedAt().toString());
+        payload.put("createdAt", toIsoString(client.getCreatedAt(), client.getUpdatedAt()));
         return payload;
+    }
+
+    private long safeCurrentMonthUsage(UUID clientId, MessageChannel channel) {
+        if (clientId == null) {
+            return 0L;
+        }
+        try {
+            return usageService.currentMonthUsage(clientId, channel);
+        } catch (RuntimeException exception) {
+            log.warn("Unable to resolve usage for clientId={} channel={}: {}", clientId, channel, exception.getMessage());
+            return 0L;
+        }
+    }
+
+    private String toIsoString(Instant primary, Instant fallback) {
+        Instant resolved = primary != null ? primary : fallback;
+        return resolved == null ? null : resolved.toString();
     }
 }

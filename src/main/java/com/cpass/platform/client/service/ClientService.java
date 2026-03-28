@@ -153,7 +153,12 @@ public class ClientService {
     }
 
     public Set<String> scopeValues(ClientEntity client) {
-        return client.getScopes().stream().map(ClientScope::scope).collect(Collectors.toCollection(LinkedHashSet::new));
+        if (client == null || client.getScopes() == null || client.getScopes().isEmpty()) {
+            return Set.of();
+        }
+        return client.getScopes().stream()
+                .map(ClientScope::scope)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     public List<String> ipWhitelist(ClientEntity client) {

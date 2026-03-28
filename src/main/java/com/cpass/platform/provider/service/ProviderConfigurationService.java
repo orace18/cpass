@@ -11,10 +11,10 @@ import com.cpass.platform.provider.domain.ProviderType;
 import com.cpass.platform.provider.infra.ProviderConfigRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -72,13 +72,13 @@ public class ProviderConfigurationService {
     }
 
     public List<ProviderSummaryResponse> listProviders() {
-        Sort.Order channelOrder = Sort.Order.asc("channel").nullsLast();
-        return providerConfigRepository.findAll(Sort.by(
-                        Sort.Order.asc("providerType"),
-                        channelOrder,
-                        Sort.Order.asc("priority"),
-                        Sort.Order.asc("code")))
+        return providerConfigRepository.findAll()
                 .stream()
+                .sorted(Comparator
+                        .comparing(ProviderConfigEntity::getProviderType, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(ProviderConfigEntity::getChannel, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparingInt(ProviderConfigEntity::getPriority)
+                        .thenComparing(entity -> entity.getCode() == null ? "" : entity.getCode()))
                 .map(this::toSummary)
                 .toList();
     }
