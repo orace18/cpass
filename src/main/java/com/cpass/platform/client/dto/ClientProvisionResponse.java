@@ -7,6 +7,7 @@ public record ClientProvisionResponse(
         String name,
         String email,
         String clientId,
-        String clientSecret
+        String clientSecret,
+        String webhookSecret
 ) {
 }

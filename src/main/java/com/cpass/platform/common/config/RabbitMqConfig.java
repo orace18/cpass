@@ -47,6 +47,23 @@ public class RabbitMqConfig {
     }
 
     @Bean
+    public Queue webhookQueue(@Value("${app.webhooks.messaging.queue:cpass.webhook.queue}") String queueName) {
+        return new Queue(queueName, true);
+    }
+
+    @Bean
+    public DirectExchange webhookExchange(@Value("${app.webhooks.messaging.exchange:cpass.webhook.exchange}") String exchangeName) {
+        return new DirectExchange(exchangeName, true, false);
+    }
+
+    @Bean
+    public Binding webhookBinding(Queue webhookQueue,
+                                  DirectExchange webhookExchange,
+                                  @Value("${app.webhooks.messaging.routing-key:cpass.webhook.dispatch}") String routingKey) {
+        return BindingBuilder.bind(webhookQueue).to(webhookExchange).with(routingKey);
+    }
+
+    @Bean
     public Jackson2JsonMessageConverter jackson2JsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
     }

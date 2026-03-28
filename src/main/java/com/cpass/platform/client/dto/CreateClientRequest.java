@@ -13,6 +13,7 @@ public record CreateClientRequest(
         @NotBlank String name,
         @NotBlank @Email String email,
         String webhookUrl,
+        Boolean webhookEnabled,
         @NotNull @Min(1) Long smsSoftQuota,
         @NotNull @Min(1) Long smsHardQuota,
         @NotNull @Min(1) Long whatsappSoftQuota,

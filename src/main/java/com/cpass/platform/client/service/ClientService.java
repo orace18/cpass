@@ -4,10 +4,12 @@ import com.cpass.platform.client.domain.ClientEntity;
 import com.cpass.platform.client.domain.ClientScope;
 import com.cpass.platform.client.dto.ClientCredentialsResponse;
 import com.cpass.platform.client.dto.ClientProvisionResponse;
+import com.cpass.platform.client.dto.ClientWebhookSecretResponse;
 import com.cpass.platform.client.dto.CreateClientRequest;
 import com.cpass.platform.client.dto.UpdateClientRequest;
 import com.cpass.platform.client.infra.ClientRepository;
 import com.cpass.platform.common.exception.ApiException;
+import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.kyc.domain.KycLevel;
 import com.cpass.platform.common.security.UserPrincipal;
 import com.cpass.platform.user.domain.UserRole;
@@ -34,14 +36,17 @@ public class ClientService {
 
     private final ClientRepository clientRepository;
     private final PasswordEncoder passwordEncoder;
+    private final SecretCryptoService secretCryptoService;
     private final UserService userService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public ClientService(ClientRepository clientRepository,
                          PasswordEncoder passwordEncoder,
+                         SecretCryptoService secretCryptoService,
                          UserService userService) {
         this.clientRepository = clientRepository;
         this.passwordEncoder = passwordEncoder;
+        this.secretCryptoService = secretCryptoService;
         this.userService = userService;
     }
 
@@ -54,7 +59,8 @@ public class ClientService {
         client.setId(UUID.randomUUID());
         client.setName(request.name().trim());
         client.setEmail(request.email().trim().toLowerCase());
-        client.setWebhookUrl(request.webhookUrl());
+        client.setWebhookUrl(normalizeWebhookUrl(request.webhookUrl()));
+        client.setWebhookEnabled(request.webhookEnabled() == null || request.webhookEnabled());
         client.setSmsSoftQuota(request.smsSoftQuota());
         client.setSmsHardQuota(request.smsHardQuota());
         client.setWhatsappSoftQuota(request.whatsappSoftQuota());
@@ -66,9 +72,17 @@ public class ClientService {
         client.setIpWhitelist(toWhitelistValue(request.ipWhitelist()));
 
         ClientCredentialsResponse credentials = applyNewSecret(client, generateClientPublicId());
+        String webhookSecret = applyNewWebhookSecret(client);
         ClientEntity saved = clientRepository.save(client);
         userService.onboardClientOwner(saved);
-        return new ClientProvisionResponse(saved.getId(), saved.getName(), saved.getEmail(), credentials.clientId(), credentials.clientSecret());
+        return new ClientProvisionResponse(
+                saved.getId(),
+                saved.getName(),
+                saved.getEmail(),
+                credentials.clientId(),
+                credentials.clientSecret(),
+                webhookSecret
+        );
     }
 
     @Transactional(readOnly = true)
@@ -105,7 +119,10 @@ public class ClientService {
             client.setEmail(request.email().trim().toLowerCase());
         }
         if (request.webhookUrl() != null) {
-            client.setWebhookUrl(request.webhookUrl());
+            client.setWebhookUrl(normalizeWebhookUrl(request.webhookUrl()));
+        }
+        if (request.webhookEnabled() != null) {
+            client.setWebhookEnabled(request.webhookEnabled());
         }
         if (request.smsSoftQuota() != null) {
             client.setSmsSoftQuota(request.smsSoftQuota());
@@ -145,6 +162,14 @@ public class ClientService {
         ClientCredentialsResponse credentials = applyNewSecret(client, client.getClientId() == null ? generateClientPublicId() : client.getClientId());
         clientRepository.save(client);
         return credentials;
+    }
+
+    @Transactional
+    public ClientWebhookSecretResponse regenerateWebhookSecret(UUID clientId) {
+        ClientEntity client = getClient(clientId);
+        String webhookSecret = applyNewWebhookSecret(client);
+        clientRepository.save(client);
+        return new ClientWebhookSecretResponse(webhookSecret, Instant.now());
     }
 
     public void assertCanAccess(UUID clientId, UserPrincipal principal) {
@@ -210,6 +235,12 @@ public class ClientService {
         return new ClientCredentialsResponse(clientPublicId, secret, Instant.now());
     }
 
+    private String applyNewWebhookSecret(ClientEntity client) {
+        String webhookSecret = "whsec_" + randomToken(36);
+        client.setWebhookSecretEncrypted(secretCryptoService.encrypt(webhookSecret));
+        return webhookSecret;
+    }
+
     private Set<ClientScope> resolveScopes(Set<String> scopes, boolean applyDefaultsWhenEmpty) {
         if (scopes == null || scopes.isEmpty()) {
             return applyDefaultsWhenEmpty ? Set.of(ClientScope.values()) : Set.of();
@@ -229,6 +260,13 @@ public class ClientService {
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .collect(Collectors.joining(","));
+    }
+
+    private String normalizeWebhookUrl(String webhookUrl) {
+        if (webhookUrl == null || webhookUrl.isBlank()) {
+            return null;
+        }
+        return webhookUrl.trim();
     }
 
     private String generateClientPublicId() {

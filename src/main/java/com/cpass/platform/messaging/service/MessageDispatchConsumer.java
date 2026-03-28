@@ -8,6 +8,7 @@ import com.cpass.platform.messaging.infra.MessageRepository;
 import com.cpass.platform.provider.domain.ProviderMessage;
 import com.cpass.platform.provider.service.ProviderDispatchResult;
 import com.cpass.platform.provider.service.ProviderRoutingService;
+import com.cpass.platform.webhook.service.ClientWebhookEventService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -24,15 +25,18 @@ public class MessageDispatchConsumer {
     private final ProviderRoutingService providerRoutingService;
     private final UsageService usageService;
     private final ObjectMapper objectMapper;
+    private final ClientWebhookEventService clientWebhookEventService;
 
     public MessageDispatchConsumer(MessageRepository messageRepository,
                                    ProviderRoutingService providerRoutingService,
                                    UsageService usageService,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   ClientWebhookEventService clientWebhookEventService) {
         this.messageRepository = messageRepository;
         this.providerRoutingService = providerRoutingService;
         this.usageService = usageService;
         this.objectMapper = objectMapper;
+        this.clientWebhookEventService = clientWebhookEventService;
     }
 
     @RabbitListener(queues = "${app.messaging.queue}")
@@ -63,6 +67,11 @@ public class MessageDispatchConsumer {
             message.setFailureReason(dispatchResult.error());
         }
         messageRepository.save(message);
+        if (dispatchResult.success()) {
+            clientWebhookEventService.enqueueMessageEvent(message, "message.sent");
+        } else {
+            clientWebhookEventService.enqueueMessageEvent(message, "message.failed");
+        }
     }
 
     private Map<String, String> parseParams(String json) {

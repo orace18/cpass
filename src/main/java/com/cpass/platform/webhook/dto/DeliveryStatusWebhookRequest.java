@@ -9,6 +9,8 @@ public record DeliveryStatusWebhookRequest(
         @NotNull UUID messageId,
         @NotBlank String providerMessageId,
         @NotBlank String status,
-        String errorDescription
+        String errorDescription,
+        String provider,
+        String timestamp
 ) {
 }

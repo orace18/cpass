@@ -34,6 +34,13 @@ app:
     exchange: cpass.message.exchange
     queue: cpass.message.dispatch.queue
     routing-key: cpass.message.dispatch
+  webhooks:
+    messaging:
+      exchange: cpass.webhook.exchange
+      queue: cpass.webhook.queue
+      routing-key: cpass.webhook.dispatch
+    retry:
+      fixed-delay-ms: 60000
   kyc:
     validity-days: 365
     auto-approve-score-threshold: 75

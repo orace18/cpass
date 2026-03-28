@@ -58,6 +58,9 @@ public class OtpAuditEntity {
     @Column(name = "verified_at")
     private Instant verifiedAt;
 
+    @Column(name = "provider_code")
+    private String providerCode;
+
     @PrePersist
     public void prePersist() {
         if (id == null) {
@@ -175,5 +178,13 @@ public class OtpAuditEntity {
 
     public void setVerifiedAt(Instant verifiedAt) {
         this.verifiedAt = verifiedAt;
+    }
+
+    public String getProviderCode() {
+        return providerCode;
+    }
+
+    public void setProviderCode(String providerCode) {
+        this.providerCode = providerCode;
     }
 }

@@ -11,6 +11,7 @@ public record UpdateClientRequest(
         String name,
         @Email String email,
         String webhookUrl,
+        Boolean webhookEnabled,
         @Min(0) Long smsSoftQuota,
         @Min(0) Long smsHardQuota,
         @Min(0) Long whatsappSoftQuota,

@@ -4,6 +4,7 @@ import com.cpass.platform.billing.service.UsageService;
 import com.cpass.platform.client.domain.ClientEntity;
 import com.cpass.platform.client.dto.ClientCredentialsResponse;
 import com.cpass.platform.client.dto.ClientProvisionResponse;
+import com.cpass.platform.client.dto.ClientWebhookSecretResponse;
 import com.cpass.platform.client.dto.CreateClientRequest;
 import com.cpass.platform.client.dto.UpdateClientRequest;
 import com.cpass.platform.client.service.ClientService;
@@ -93,6 +94,12 @@ public class ClientController {
         return clientService.regenerateSecret(clientId);
     }
 
+    @PostMapping("/{clientId}/regenerate-webhook-secret")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ClientWebhookSecretResponse regenerateWebhookSecret(@PathVariable UUID clientId) {
+        return clientService.regenerateWebhookSecret(clientId);
+    }
+
     private Map<String, Object> toMap(ClientEntity client) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("id", client.getId() == null ? null : client.getId().toString());
@@ -102,6 +109,8 @@ public class ClientController {
         payload.put("enabled", client.isEnabled());
         payload.put("status", client.isEnabled() ? "active" : "inactive");
         payload.put("webhookUrl", client.getWebhookUrl());
+        payload.put("webhookEnabled", client.isWebhookEnabled());
+        payload.put("webhookSecretConfigured", client.getWebhookSecretEncrypted() != null && !client.getWebhookSecretEncrypted().isBlank());
         payload.put("rateLimitPerMinute", client.getRateLimitPerMinute());
         payload.put("scopes", clientService.scopeValues(client));
         payload.put("kycLevelRequired", client.getKycLevelRequired() == null

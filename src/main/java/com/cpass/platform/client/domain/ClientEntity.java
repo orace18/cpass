@@ -48,6 +48,12 @@ public class ClientEntity {
     @Column(name = "webhook_url")
     private String webhookUrl;
 
+    @Column(name = "webhook_enabled", nullable = false)
+    private boolean webhookEnabled = true;
+
+    @Column(name = "webhook_secret_encrypted")
+    private String webhookSecretEncrypted;
+
     @Column(name = "sms_soft_quota", nullable = false)
     private long smsSoftQuota;
 
@@ -151,6 +157,22 @@ public class ClientEntity {
 
     public void setWebhookUrl(String webhookUrl) {
         this.webhookUrl = webhookUrl;
+    }
+
+    public boolean isWebhookEnabled() {
+        return webhookEnabled;
+    }
+
+    public void setWebhookEnabled(boolean webhookEnabled) {
+        this.webhookEnabled = webhookEnabled;
+    }
+
+    public String getWebhookSecretEncrypted() {
+        return webhookSecretEncrypted;
+    }
+
+    public void setWebhookSecretEncrypted(String webhookSecretEncrypted) {
+        this.webhookSecretEncrypted = webhookSecretEncrypted;
     }
 
     public long getSmsSoftQuota() {
