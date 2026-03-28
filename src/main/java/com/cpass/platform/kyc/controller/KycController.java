@@ -10,6 +10,7 @@ import com.cpass.platform.kyc.dto.KycContactVerificationRequest;
 import com.cpass.platform.kyc.dto.KycFieldVerificationRequest;
 import com.cpass.platform.kyc.dto.KycSocialValidationRequest;
 import com.cpass.platform.kyc.dto.KycUploadResponse;
+import com.cpass.platform.kyc.dto.KycVerifyRequest;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
@@ -43,6 +44,13 @@ public class KycController {
         return kycService.checkOrInit(principal.clientId(), principal.kycLevelRequired(), request);
     }
 
+    @PostMapping("/init")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCheckOrInitResponse init(@Valid @RequestBody KycCheckOrInitRequest request) {
+        ClientPrincipal principal = ClientContextHolder.requireClient();
+        return kycService.checkOrInit(principal.clientId(), principal.kycLevelRequired(), request);
+    }
+
     @GetMapping("/cases/{caseId}")
     @PreAuthorize("hasAuthority('SCOPE_kyc:read')")
     public KycCaseResponse getCase(@PathVariable UUID caseId) {
@@ -65,6 +73,15 @@ public class KycController {
         return kycService.upload(ClientContextHolder.requireClientId(), caseId, documentType, file, metadata);
     }
 
+    @PostMapping(value = "/submit-document", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycUploadResponse submitDocument(@RequestParam UUID caseId,
+                                            @RequestParam KycDocumentType documentType,
+                                            @RequestPart("file") MultipartFile file,
+                                            @RequestPart(value = "metadata", required = false) String metadata) {
+        return kycService.upload(ClientContextHolder.requireClientId(), caseId, documentType, file, metadata);
+    }
+
     @PostMapping("/cases/{caseId}/field-verification")
     @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
     public KycCaseResponse recordFieldVerification(@PathVariable UUID caseId,
@@ -77,5 +94,15 @@ public class KycController {
     public KycCaseResponse recordSocialValidation(@PathVariable UUID caseId,
                                                   @Valid @RequestBody KycSocialValidationRequest request) {
         return kycService.recordSocialValidation(ClientContextHolder.requireClientId(), caseId, request);
+    }
+
+    @PostMapping("/verify")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCaseResponse verify(@Valid @RequestBody KycVerifyRequest request) {
+        return kycService.verifyContact(
+                ClientContextHolder.requireClientId(),
+                request.caseId(),
+                new KycContactVerificationRequest(request.otpReferenceId(), request.otpCode())
+        );
     }
 }
