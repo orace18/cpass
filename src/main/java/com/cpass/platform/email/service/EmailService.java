@@ -2,7 +2,9 @@ package com.cpass.platform.email.service;
 
 import com.cpass.platform.common.exception.ApiException;
 import jakarta.mail.internet.InternetAddress;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
@@ -17,11 +19,17 @@ public class EmailService {
 
     private final EmailConfigurationService emailConfigurationService;
     private final EmailBootstrapProperties bootstrapProperties;
+    private final Optional<JavaMailSender> springMailSender;
+    private final String defaultFromEmail;
 
     public EmailService(EmailConfigurationService emailConfigurationService,
-                        EmailBootstrapProperties bootstrapProperties) {
+                        EmailBootstrapProperties bootstrapProperties,
+                        Optional<JavaMailSender> springMailSender,
+                        @Value("${app.email.default-from:}") String defaultFromEmail) {
         this.emailConfigurationService = emailConfigurationService;
         this.bootstrapProperties = bootstrapProperties;
+        this.springMailSender = springMailSender;
+        this.defaultFromEmail = defaultFromEmail;
     }
 
     public void sendEmail(String to, String subject, String body) {
@@ -29,20 +37,28 @@ public class EmailService {
     }
 
     public void sendEmail(UUID clientId, String to, String subject, String body) {
-        EmailConfigurationService.SmtpSettings settings = resolveSettings(clientId);
+        Optional<EmailConfigurationService.SmtpSettings> configured = emailConfigurationService.resolveForClient(clientId);
         try {
-            JavaMailSenderImpl sender = buildSender(settings);
-            var message = sender.createMimeMessage();
-            var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(body, false);
-            if (settings.fromName() != null && !settings.fromName().isBlank()) {
-                helper.setFrom(new InternetAddress(settings.fromEmail(), settings.fromName(), StandardCharsets.UTF_8.name()));
+            if (configured.isPresent()) {
+                sendWithSettings(configured.get(), to, subject, body);
+            } else if (bootstrapProperties.isConfigured()) {
+                sendWithSettings(new EmailConfigurationService.SmtpSettings(
+                        bootstrapProperties.host(),
+                        bootstrapProperties.port(),
+                        blankToNull(bootstrapProperties.username()),
+                        blankToNull(bootstrapProperties.password()),
+                        bootstrapProperties.fromEmail(),
+                        blankToNull(bootstrapProperties.fromName()),
+                        "BOOTSTRAP",
+                        null
+                ), to, subject, body);
+            } else if (springMailSender.isPresent() && !defaultFromEmail.isBlank()) {
+                sendWithSpringMailSender(springMailSender.get(), to, subject, body, defaultFromEmail);
             } else {
-                helper.setFrom(settings.fromEmail());
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "EMAIL_NOT_CONFIGURED", "No SMTP configuration is available");
             }
-            sender.send(message);
+        } catch (ApiException e) {
+            throw e;
         } catch (Exception exception) {
             throw new ApiException(HttpStatus.BAD_GATEWAY, "EMAIL_SEND_FAILED", "Unable to send email");
         }
@@ -68,24 +84,30 @@ public class EmailService {
                 "Use this secure link to reset your password. It expires in 15 minutes.\n" + link);
     }
 
-    private EmailConfigurationService.SmtpSettings resolveSettings(UUID clientId) {
-        Optional<EmailConfigurationService.SmtpSettings> configured = emailConfigurationService.resolveForClient(clientId);
-        if (configured.isPresent()) {
-            return configured.get();
+    private void sendWithSettings(EmailConfigurationService.SmtpSettings settings, String to, String subject, String body) throws Exception {
+        JavaMailSenderImpl sender = buildSender(settings);
+        var message = sender.createMimeMessage();
+        var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
+        helper.setTo(to);
+        helper.setSubject(subject);
+        helper.setText(body, false);
+        if (settings.fromName() != null && !settings.fromName().isBlank()) {
+            helper.setFrom(new InternetAddress(settings.fromEmail(), settings.fromName(), StandardCharsets.UTF_8.name()));
+        } else {
+            helper.setFrom(settings.fromEmail());
         }
-        if (bootstrapProperties.isConfigured()) {
-            return new EmailConfigurationService.SmtpSettings(
-                    bootstrapProperties.host(),
-                    bootstrapProperties.port(),
-                    blankToNull(bootstrapProperties.username()),
-                    blankToNull(bootstrapProperties.password()),
-                    bootstrapProperties.fromEmail(),
-                    blankToNull(bootstrapProperties.fromName()),
-                    "BOOTSTRAP",
-                    null
-            );
-        }
-        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "EMAIL_NOT_CONFIGURED", "No SMTP configuration is available");
+        sender.send(message);
+    }
+
+    private void sendWithSpringMailSender(JavaMailSender sender, String to, String subject, String body, String fromEmail) throws Exception {
+        JavaMailSenderImpl impl = (JavaMailSenderImpl) sender;
+        var message = impl.createMimeMessage();
+        var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
+        helper.setTo(to);
+        helper.setSubject(subject);
+        helper.setText(body, false);
+        helper.setFrom(fromEmail);
+        impl.send(message);
     }
 
     private JavaMailSenderImpl buildSender(EmailConfigurationService.SmtpSettings settings) {
@@ -95,10 +117,13 @@ public class EmailService {
         sender.setUsername(settings.username());
         sender.setPassword(settings.password());
 
+        boolean sslDirect = settings.port() == 465;
+
         Properties properties = sender.getJavaMailProperties();
         properties.put("mail.transport.protocol", "smtp");
         properties.put("mail.smtp.auth", settings.username() != null && !settings.username().isBlank());
-        properties.put("mail.smtp.starttls.enable", "true");
+        properties.put("mail.smtp.ssl.enable", String.valueOf(sslDirect));
+        properties.put("mail.smtp.starttls.enable", String.valueOf(!sslDirect));
         properties.put("mail.smtp.connectiontimeout", "5000");
         properties.put("mail.smtp.timeout", "5000");
         properties.put("mail.smtp.writetimeout", "5000");
