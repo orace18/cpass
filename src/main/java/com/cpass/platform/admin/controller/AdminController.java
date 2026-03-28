@@ -1,5 +1,8 @@
 package com.cpass.platform.admin.controller;
 
+import com.cpass.platform.admin.dto.ProviderConfigRequest;
+import com.cpass.platform.admin.dto.ProviderConfigResponse;
+import com.cpass.platform.admin.dto.ProviderSummaryResponse;
 import com.cpass.platform.admin.dto.ProviderTestRequest;
 import com.cpass.platform.admin.dto.ProviderTestResponse;
 import com.cpass.platform.admin.dto.RouteMobileConfigRequest;
@@ -12,6 +15,7 @@ import com.cpass.platform.provider.domain.ProviderMessage;
 import com.cpass.platform.provider.domain.ProviderType;
 import com.cpass.platform.messaging.infra.MessageRepository;
 import com.cpass.platform.provider.infra.ProviderConfigRepository;
+import com.cpass.platform.provider.service.ProviderConfigurationService;
 import com.cpass.platform.provider.service.ProviderDispatchResult;
 import com.cpass.platform.provider.service.ProviderRoutingService;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -44,6 +48,7 @@ public class AdminController {
     private static final MessageChannel RM_CHANNEL = MessageChannel.SMS;
 
     private final ProviderRoutingService providerRoutingService;
+    private final ProviderConfigurationService providerConfigurationService;
     private final ProviderConfigRepository providerConfigRepository;
     private final MessageRepository messageRepository;
     private final SecretCryptoService cryptoService;
@@ -51,12 +56,14 @@ public class AdminController {
     private final AdminSecurityService adminSecurityService;
 
     public AdminController(ProviderRoutingService providerRoutingService,
+                           ProviderConfigurationService providerConfigurationService,
                            ProviderConfigRepository providerConfigRepository,
                            MessageRepository messageRepository,
                            SecretCryptoService cryptoService,
                            ObjectMapper objectMapper,
                            AdminSecurityService adminSecurityService) {
         this.providerRoutingService = providerRoutingService;
+        this.providerConfigurationService = providerConfigurationService;
         this.providerConfigRepository = providerConfigRepository;
         this.messageRepository = messageRepository;
         this.cryptoService = cryptoService;
@@ -69,52 +76,33 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     @GetMapping("/providers")
-    public List<Map<String, Object>> listProviders(
+    public List<ProviderSummaryResponse> listProviders(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken) {
         adminSecurityService.ensureAdminToken(headerToken);
-        return providerConfigRepository.findAll().stream()
-                .map(p -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id", p.getId().toString());
-                    m.put("providerType", p.getProviderType().name());
-                    m.put("code", p.getCode());
-                    m.put("channel", p.getChannel() == null ? "KYC" : p.getChannel().name());
-                    m.put("priority", p.getPriority());
-                    m.put("active", p.isActive());
-                    m.put("configJson", p.getConfigJson());
-                    m.put("createdAt", p.getCreatedAt().toString());
-                    m.put("updatedAt", p.getUpdatedAt().toString());
-                    return m;
-                })
-                .toList();
+        return providerConfigurationService.listProviders();
     }
 
     @PatchMapping("/providers/{id}")
-    public Map<String, Object> patchProvider(
+    public ProviderSummaryResponse patchProvider(
             @RequestHeader("X-ADMIN-TOKEN") String headerToken,
             @PathVariable UUID id,
-            @RequestBody Map<String, Object> patch) throws Exception {
+            @RequestBody Map<String, Object> patch) {
         adminSecurityService.ensureAdminToken(headerToken);
-        ProviderConfigEntity entity = providerConfigRepository.findById(id)
-                .orElseThrow(() -> new com.cpass.platform.common.exception.ApiException(org.springframework.http.HttpStatus.NOT_FOUND,
-                        "PROVIDER_NOT_FOUND", "Provider not found: " + id));
+        return providerConfigurationService.updateProvider(id, patch);
+    }
 
-        if (patch.containsKey("active")) entity.setActive((Boolean) patch.get("active"));
-        if (patch.containsKey("priority")) entity.setPriority(((Number) patch.get("priority")).intValue());
-        if (patch.containsKey("configJson")) entity.setConfigJson((String) patch.get("configJson"));
+    @GetMapping("/providers/config/{provider}")
+    public ProviderConfigResponse getProviderConfig(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
+                                                    @PathVariable String provider) {
+        adminSecurityService.ensureAdminToken(headerToken);
+        return providerConfigurationService.getProviderConfig(provider);
+    }
 
-        entity = providerConfigRepository.save(entity);
-
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", entity.getId().toString());
-        m.put("providerType", entity.getProviderType().name());
-        m.put("code", entity.getCode());
-        m.put("channel", entity.getChannel() == null ? "KYC" : entity.getChannel().name());
-        m.put("priority", entity.getPriority());
-        m.put("active", entity.isActive());
-        m.put("configJson", entity.getConfigJson());
-        m.put("updatedAt", entity.getUpdatedAt().toString());
-        return m;
+    @PostMapping("/providers/config")
+    public ProviderConfigResponse saveProviderConfig(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
+                                                     @Valid @RequestBody ProviderConfigRequest request) {
+        adminSecurityService.ensureAdminToken(headerToken);
+        return providerConfigurationService.saveProviderConfig(request);
     }
 
     // -------------------------------------------------------------------------
@@ -138,7 +126,7 @@ public class AdminController {
         );
 
         ProviderDispatchResult result = providerRoutingService.directDispatch(
-                request.provider().toUpperCase(), channel, message);
+                providerConfigurationService.normalizeProviderCode(request.provider()), channel, message);
 
         return new ProviderTestResponse(
                 result.success() ? "SUCCESS" : "FAILED",

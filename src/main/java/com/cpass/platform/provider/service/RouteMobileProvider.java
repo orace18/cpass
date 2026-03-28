@@ -117,7 +117,7 @@ public class RouteMobileProvider implements MessagingProvider {
                 "RouteMobile SMS credentials not configured — set username/password via admin panel");
         }
 
-        String password = decryptPassword(encPwd);
+        String password = decryptSecret(encPwd);
 
         // type=0 plain GSM-7, type=2 Unicode — auto-detected
         int type = isGsm7(message.rawMessage()) ? 0 : 2;
@@ -194,7 +194,7 @@ public class RouteMobileProvider implements MessagingProvider {
     // =========================================================================
 
     private ProviderDispatchResult sendWhatsApp(ProviderMessage message, JsonNode cfg) throws Exception {
-        String apiKey   = cfg.path("apiKey").asText("").trim();
+        String apiKey   = decryptSecret(cfg.path("apiKey").asText("").trim());
         String senderId = cfg.path("senderId").asText("").trim();
         String apiUrl   = cfg.path("waApiUrl").asText(WA_API_URL);
         String language = cfg.path("templateLanguage").asText("en");
@@ -285,11 +285,11 @@ public class RouteMobileProvider implements MessagingProvider {
         return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
-    private String decryptPassword(String stored) {
+    private String decryptSecret(String stored) {
         try {
             return cryptoService.decrypt(stored);
         } catch (Exception e) {
-            log.debug("RouteMobile: password not encrypted, using as-is (dev/initial setup)");
+            log.debug("RouteMobile: secret not encrypted, using as-is (dev/initial setup)");
             return stored;
         }
     }

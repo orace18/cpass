@@ -13,6 +13,8 @@ public interface ProviderConfigRepository extends JpaRepository<ProviderConfigEn
 
     List<ProviderConfigEntity> findByProviderTypeAndChannelAndActiveTrueOrderByPriorityAsc(ProviderType providerType, MessageChannel channel);
 
+    List<ProviderConfigEntity> findByProviderTypeAndChannelOrderByPriorityAsc(ProviderType providerType, MessageChannel channel);
+
     List<ProviderConfigEntity> findByProviderTypeAndActiveTrueOrderByPriorityAsc(ProviderType providerType);
 
     Optional<ProviderConfigEntity> findByProviderTypeAndCodeAndChannel(ProviderType providerType, String code, MessageChannel channel);

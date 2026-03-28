@@ -1,5 +1,6 @@
 package com.cpass.platform.provider.service;
 
+import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -24,10 +25,12 @@ public class AfricasTalkingProvider implements MessagingProvider {
     private static final String DEFAULT_API_URL = "https://api.africastalking.com/version1/messaging";
 
     private final ObjectMapper objectMapper;
+    private final SecretCryptoService cryptoService;
     private final HttpClient httpClient;
 
-    public AfricasTalkingProvider(ObjectMapper objectMapper) {
+    public AfricasTalkingProvider(ObjectMapper objectMapper, SecretCryptoService cryptoService) {
         this.objectMapper = objectMapper;
+        this.cryptoService = cryptoService;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -50,7 +53,7 @@ public class AfricasTalkingProvider implements MessagingProvider {
             }
 
             String username = config.path("username").asText();
-            String apiKey   = config.path("apiKey").asText();
+            String apiKey   = decryptSecret(config.path("apiKey").asText());
             String senderId = config.path("senderId").asText("");
             String apiUrl   = config.path("apiUrl").asText(DEFAULT_API_URL);
             BigDecimal cost = BigDecimal.valueOf(config.path("unitCost").asDouble(0.05));
@@ -102,5 +105,16 @@ public class AfricasTalkingProvider implements MessagingProvider {
 
     private static String encode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private String decryptSecret(String storedValue) {
+        if (storedValue == null || storedValue.isBlank()) {
+            return "";
+        }
+        try {
+            return cryptoService.decrypt(storedValue);
+        } catch (Exception exception) {
+            return storedValue;
+        }
     }
 }

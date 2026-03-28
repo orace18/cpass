@@ -1,5 +1,6 @@
 package com.cpass.platform.provider.service;
 
+import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
 import com.cpass.platform.provider.domain.ProviderMessage;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -26,10 +27,12 @@ public class WhatsAppMetaProvider implements MessagingProvider {
     private static final String BASE_URL = "https://graph.facebook.com/v18.0";
 
     private final ObjectMapper objectMapper;
+    private final SecretCryptoService cryptoService;
     private final HttpClient httpClient;
 
-    public WhatsAppMetaProvider(ObjectMapper objectMapper) {
+    public WhatsAppMetaProvider(ObjectMapper objectMapper, SecretCryptoService cryptoService) {
         this.objectMapper = objectMapper;
+        this.cryptoService = cryptoService;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -52,7 +55,7 @@ public class WhatsAppMetaProvider implements MessagingProvider {
             }
 
             String phoneNumberId = config.path("phoneNumberId").asText();
-            String token         = config.path("token").asText();
+            String token         = decryptSecret(config.path("accessToken").asText(config.path("token").asText("")));
             String language      = config.path("templateLanguage").asText("en_US");
             BigDecimal cost      = BigDecimal.valueOf(config.path("unitCost").asDouble(0.05));
 
@@ -128,5 +131,16 @@ public class WhatsAppMetaProvider implements MessagingProvider {
         }
 
         return objectMapper.writeValueAsString(payload);
+    }
+
+    private String decryptSecret(String storedValue) {
+        if (storedValue == null || storedValue.isBlank()) {
+            return "";
+        }
+        try {
+            return cryptoService.decrypt(storedValue);
+        } catch (Exception exception) {
+            return storedValue;
+        }
     }
 }
