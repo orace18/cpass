@@ -45,8 +45,12 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         return "/auth/login".equals(path)
+                || "/auth/2fa/verify".equals(path)
+                || "/auth/forgot-password".equals(path)
+                || "/auth/reset-password".equals(path)
                 || path.startsWith("/admin")
-                || path.startsWith("/clients");
+                || path.startsWith("/clients")
+                || path.startsWith("/me");
     }
 
     @Override

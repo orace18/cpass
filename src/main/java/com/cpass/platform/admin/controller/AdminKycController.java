@@ -1,7 +1,6 @@
 package com.cpass.platform.admin.controller;
 
 import com.cpass.platform.client.infra.ClientRepository;
-import com.cpass.platform.common.security.AdminSecurityService;
 import com.cpass.platform.kyc.domain.KycCaseEntity;
 import com.cpass.platform.kyc.domain.KycCaseStatus;
 import com.cpass.platform.kyc.domain.KycDocumentEntity;
@@ -12,11 +11,11 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -28,34 +27,28 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/admin/kyc")
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminKycController {
 
-    private final AdminSecurityService adminSecurityService;
     private final KycService kycService;
     private final ClientRepository clientRepository;
 
-    public AdminKycController(AdminSecurityService adminSecurityService,
-                              KycService kycService,
+    public AdminKycController(KycService kycService,
                               ClientRepository clientRepository) {
-        this.adminSecurityService = adminSecurityService;
         this.kycService = kycService;
         this.clientRepository = clientRepository;
     }
 
     @GetMapping
-    public List<Map<String, Object>> listCases(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                               @RequestParam(required = false) KycCaseStatus status) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public List<Map<String, Object>> listCases(@RequestParam(required = false) KycCaseStatus status) {
         return kycService.listCases(status).stream()
                 .map(this::toMap)
                 .toList();
     }
 
     @PostMapping("/{caseId}/review")
-    public Map<String, Object> review(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                      @PathVariable UUID caseId,
+    public Map<String, Object> review(@PathVariable UUID caseId,
                                       @Valid @RequestBody AdminKycReviewRequest request) {
-        adminSecurityService.ensureAdminToken(headerToken);
         KycCaseEntity reviewed = kycService.listCases(null).stream()
                 .filter(item -> item.getId().equals(caseId))
                 .findFirst()
@@ -69,9 +62,7 @@ public class AdminKycController {
 
     @GetMapping("/documents/{documentId}/download")
     public ResponseEntity<byte[]> download(@PathVariable UUID documentId,
-                                           @RequestParam(required = false) String token,
-                                           @RequestHeader(value = "X-ADMIN-TOKEN", required = false) String headerToken) {
-        adminSecurityService.ensureAdminToken(headerToken != null ? headerToken : token);
+                                           @RequestParam(required = false) String token) {
         KycService.DownloadedDocument document = kycService.download(documentId);
         return ResponseEntity.ok()
                 .contentType(document.contentType() == null ? MediaType.APPLICATION_OCTET_STREAM : MediaType.parseMediaType(document.contentType()))

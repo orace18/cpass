@@ -15,11 +15,9 @@ import java.io.IOException;
 public class AuditLogFilter extends OncePerRequestFilter {
 
     private final AuditLogRepository auditLogRepository;
-    private final AdminSecurityService adminSecurityService;
 
-    public AuditLogFilter(AuditLogRepository auditLogRepository, AdminSecurityService adminSecurityService) {
+    public AuditLogFilter(AuditLogRepository auditLogRepository) {
         this.auditLogRepository = auditLogRepository;
-        this.adminSecurityService = adminSecurityService;
     }
 
     @Override
@@ -44,9 +42,10 @@ public class AuditLogFilter extends OncePerRequestFilter {
                 auditLog.setActorType("CLIENT");
                 auditLog.setActorId(principal.clientPublicId());
                 auditLog.setClientId(principal.clientId());
-            } else if (adminSecurityService.isAdminToken(request.getHeader("X-ADMIN-TOKEN"))) {
-                auditLog.setActorType("ADMIN");
-                auditLog.setActorId("admin");
+            } else if (authentication != null && authentication.getPrincipal() instanceof UserPrincipal principal) {
+                auditLog.setActorType(principal.role().name());
+                auditLog.setActorId(principal.email());
+                auditLog.setClientId(principal.clientId());
             } else {
                 auditLog.setActorType("ANONYMOUS");
                 auditLog.setActorId(null);

@@ -7,7 +7,6 @@ import com.cpass.platform.admin.dto.ProviderTestRequest;
 import com.cpass.platform.admin.dto.ProviderTestResponse;
 import com.cpass.platform.admin.dto.RouteMobileConfigRequest;
 import com.cpass.platform.admin.dto.RouteMobileConfigResponse;
-import com.cpass.platform.common.security.AdminSecurityService;
 import com.cpass.platform.common.security.SecretCryptoService;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import com.cpass.platform.provider.domain.ProviderConfigEntity;
@@ -21,12 +20,12 @@ import com.cpass.platform.provider.service.ProviderRoutingService;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,6 +41,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/admin")
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminController {
 
     private static final String RM_CODE    = "ROUTE_MOBILE";
@@ -53,22 +53,19 @@ public class AdminController {
     private final MessageRepository messageRepository;
     private final SecretCryptoService cryptoService;
     private final ObjectMapper objectMapper;
-    private final AdminSecurityService adminSecurityService;
 
     public AdminController(ProviderRoutingService providerRoutingService,
                            ProviderConfigurationService providerConfigurationService,
                            ProviderConfigRepository providerConfigRepository,
                            MessageRepository messageRepository,
                            SecretCryptoService cryptoService,
-                           ObjectMapper objectMapper,
-                           AdminSecurityService adminSecurityService) {
+                           ObjectMapper objectMapper) {
         this.providerRoutingService = providerRoutingService;
         this.providerConfigurationService = providerConfigurationService;
         this.providerConfigRepository = providerConfigRepository;
         this.messageRepository = messageRepository;
         this.cryptoService = cryptoService;
         this.objectMapper = objectMapper;
-        this.adminSecurityService = adminSecurityService;
     }
 
     // -------------------------------------------------------------------------
@@ -76,32 +73,23 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     @GetMapping("/providers")
-    public List<ProviderSummaryResponse> listProviders(
-            @RequestHeader("X-ADMIN-TOKEN") String headerToken) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public List<ProviderSummaryResponse> listProviders() {
         return providerConfigurationService.listProviders();
     }
 
     @PatchMapping("/providers/{id}")
-    public ProviderSummaryResponse patchProvider(
-            @RequestHeader("X-ADMIN-TOKEN") String headerToken,
-            @PathVariable UUID id,
+    public ProviderSummaryResponse patchProvider(@PathVariable UUID id,
             @RequestBody Map<String, Object> patch) {
-        adminSecurityService.ensureAdminToken(headerToken);
         return providerConfigurationService.updateProvider(id, patch);
     }
 
     @GetMapping("/providers/config/{provider}")
-    public ProviderConfigResponse getProviderConfig(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                                    @PathVariable String provider) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public ProviderConfigResponse getProviderConfig(@PathVariable String provider) {
         return providerConfigurationService.getProviderConfig(provider);
     }
 
     @PostMapping("/providers/config")
-    public ProviderConfigResponse saveProviderConfig(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                                     @Valid @RequestBody ProviderConfigRequest request) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public ProviderConfigResponse saveProviderConfig(@Valid @RequestBody ProviderConfigRequest request) {
         return providerConfigurationService.saveProviderConfig(request);
     }
 
@@ -110,10 +98,7 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     @PostMapping("/providers/test")
-    public ProviderTestResponse testProvider(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                             @Valid @RequestBody ProviderTestRequest request) {
-        adminSecurityService.ensureAdminToken(headerToken);
-
+    public ProviderTestResponse testProvider(@Valid @RequestBody ProviderTestRequest request) {
         MessageChannel channel = MessageChannel.valueOf(request.channel().toUpperCase());
 
         ProviderMessage message = new ProviderMessage(
@@ -141,19 +126,13 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     @GetMapping("/providers/routemobile/config")
-    public RouteMobileConfigResponse getRouteMobileConfig(
-            @RequestHeader("X-ADMIN-TOKEN") String headerToken) throws Exception {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public RouteMobileConfigResponse getRouteMobileConfig() throws Exception {
         ProviderConfigEntity entity = findRouteMobileEntity();
         return toConfigResponse(entity);
     }
 
     @PostMapping("/providers/routemobile/config")
-    public RouteMobileConfigResponse saveRouteMobileConfig(
-            @RequestHeader("X-ADMIN-TOKEN") String headerToken,
-            @Valid @RequestBody RouteMobileConfigRequest request) throws Exception {
-        adminSecurityService.ensureAdminToken(headerToken);
-
+    public RouteMobileConfigResponse saveRouteMobileConfig(@Valid @RequestBody RouteMobileConfigRequest request) throws Exception {
         ProviderConfigEntity entity = findRouteMobileEntity();
 
         // Merge existing JSON with new values
@@ -189,11 +168,7 @@ public class AdminController {
     // -------------------------------------------------------------------------
 
     @GetMapping("/stats/daily-volume")
-    public List<Map<String, Object>> dailyVolume(
-            @RequestHeader("X-ADMIN-TOKEN") String headerToken,
-            @RequestParam(defaultValue = "30") int days) {
-        adminSecurityService.ensureAdminToken(headerToken);
-
+    public List<Map<String, Object>> dailyVolume(@RequestParam(defaultValue = "30") int days) {
         Instant since = Instant.now().minus(days, ChronoUnit.DAYS);
         List<Object[]> rows = messageRepository.dailyVolume(since);
 

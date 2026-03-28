@@ -9,6 +9,9 @@ import com.cpass.platform.client.dto.UpdateClientRequest;
 import com.cpass.platform.client.infra.ClientRepository;
 import com.cpass.platform.common.exception.ApiException;
 import com.cpass.platform.kyc.domain.KycLevel;
+import com.cpass.platform.common.security.UserPrincipal;
+import com.cpass.platform.user.domain.UserRole;
+import com.cpass.platform.user.service.UserService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -31,11 +34,15 @@ public class ClientService {
 
     private final ClientRepository clientRepository;
     private final PasswordEncoder passwordEncoder;
+    private final UserService userService;
     private final SecureRandom secureRandom = new SecureRandom();
 
-    public ClientService(ClientRepository clientRepository, PasswordEncoder passwordEncoder) {
+    public ClientService(ClientRepository clientRepository,
+                         PasswordEncoder passwordEncoder,
+                         UserService userService) {
         this.clientRepository = clientRepository;
         this.passwordEncoder = passwordEncoder;
+        this.userService = userService;
     }
 
     @Transactional
@@ -60,6 +67,7 @@ public class ClientService {
 
         ClientCredentialsResponse credentials = applyNewSecret(client, generateClientPublicId());
         ClientEntity saved = clientRepository.save(client);
+        userService.onboardClientOwner(saved);
         return new ClientProvisionResponse(saved.getId(), saved.getName(), saved.getEmail(), credentials.clientId(), credentials.clientSecret());
     }
 
@@ -137,6 +145,15 @@ public class ClientService {
         ClientCredentialsResponse credentials = applyNewSecret(client, client.getClientId() == null ? generateClientPublicId() : client.getClientId());
         clientRepository.save(client);
         return credentials;
+    }
+
+    public void assertCanAccess(UUID clientId, UserPrincipal principal) {
+        if (principal.role() == UserRole.ADMIN) {
+            return;
+        }
+        if (principal.clientId() == null || !principal.clientId().equals(clientId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "ACCESS_DENIED", "You can only access your own client");
+        }
     }
 
     @Transactional(readOnly = true)

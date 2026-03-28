@@ -1,11 +1,35 @@
 app:
+  admin:
+    email: admin@jawupay.com
+    password: change-me-now
+    name: Platform Admin
+  frontend:
+    base-url: https://cpass-admin.vercel.app
   security:
     master-key: ${SECURITY_MASTER_KEY}
     jwt:
       secret: ${JWT_SECRET}
       issuer: cpass-platform
       ttl-seconds: 1800
+    user-jwt:
+      secret: ${USER_JWT_SECRET:${JWT_SECRET}}
+      issuer: cpass-platform-users
+      ttl-seconds: 3600
+    two-factor:
+      ttl-seconds: 300
+      max-attempts: 5
+    password-reset:
+      ttl-seconds: 900
   admin-token: ${ADMIN_TOKEN}
+  email:
+    bootstrap:
+      enabled: true
+      host: smtp.mailtrap.io
+      port: 587
+      username: ${BOOTSTRAP_SMTP_USERNAME}
+      password: ${BOOTSTRAP_SMTP_PASSWORD}
+      from-email: no-reply@jawupay.com
+      from-name: JawuPay CPaaS
   messaging:
     exchange: cpass.message.exchange
     queue: cpass.message.dispatch.queue

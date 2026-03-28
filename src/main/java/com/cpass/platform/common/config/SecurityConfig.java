@@ -2,9 +2,12 @@ package com.cpass.platform.common.config;
 
 import com.cpass.platform.common.security.AuditLogFilter;
 import com.cpass.platform.common.security.ClientJwtAuthenticationFilter;
+import com.cpass.platform.common.security.UserJwtAuthenticationFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -27,6 +30,7 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   UserJwtAuthenticationFilter userJwtAuthenticationFilter,
                                                    ClientJwtAuthenticationFilter clientJwtAuthenticationFilter,
                                                    AuditLogFilter auditLogFilter) throws Exception {
         http
@@ -36,10 +40,30 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                        .requestMatchers("/auth/**", "/clients/**", "/admin/**", "/webhooks/delivery").permitAll()
+                        .requestMatchers("/auth/token", "/auth/login", "/auth/2fa/verify", "/auth/forgot-password", "/auth/reset-password").permitAll()
+                        .requestMatchers("/webhooks/delivery").permitAll()
+                        .requestMatchers("/admin/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/clients").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/clients/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PATCH, "/clients/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/clients/*").hasAnyRole("ADMIN", "CLIENT")
+                        .requestMatchers("/me/**").hasAnyRole("ADMIN", "CLIENT")
                         .anyRequest().permitAll()
                 )
-                .addFilterBefore(clientJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint((request, response, exception) -> {
+                            response.setStatus(401);
+                            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                            response.getWriter().write("{\"code\":\"AUTH_REQUIRED\",\"message\":\"Authentication is required\"}");
+                        })
+                        .accessDeniedHandler((request, response, exception) -> {
+                            response.setStatus(403);
+                            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                            response.getWriter().write("{\"code\":\"ACCESS_DENIED\",\"message\":\"Access denied\"}");
+                        })
+                )
+                .addFilterBefore(userJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(clientJwtAuthenticationFilter, UserJwtAuthenticationFilter.class)
                 .addFilterAfter(auditLogFilter, ClientJwtAuthenticationFilter.class)
                 .cors(Customizer.withDefaults());
         return http.build();

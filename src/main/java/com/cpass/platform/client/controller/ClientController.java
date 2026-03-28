@@ -7,7 +7,7 @@ import com.cpass.platform.client.dto.ClientProvisionResponse;
 import com.cpass.platform.client.dto.CreateClientRequest;
 import com.cpass.platform.client.dto.UpdateClientRequest;
 import com.cpass.platform.client.service.ClientService;
-import com.cpass.platform.common.security.AdminSecurityService;
+import com.cpass.platform.common.security.UserContextHolder;
 import com.cpass.platform.kyc.domain.KycLevel;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import jakarta.validation.Valid;
@@ -16,12 +16,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -40,22 +40,18 @@ public class ClientController {
 
     private final ClientService clientService;
     private final UsageService usageService;
-    private final AdminSecurityService adminSecurityService;
 
     public ClientController(ClientService clientService,
-                            UsageService usageService,
-                            AdminSecurityService adminSecurityService) {
+                            UsageService usageService) {
         this.clientService = clientService;
         this.usageService = usageService;
-        this.adminSecurityService = adminSecurityService;
     }
 
     @GetMapping
-    public Map<String, Object> listClients(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                           @RequestParam(defaultValue = "1") int page,
+    @PreAuthorize("hasRole('ADMIN')")
+    public Map<String, Object> listClients(@RequestParam(defaultValue = "1") int page,
                                            @RequestParam(defaultValue = "10") int pageSize,
                                            @RequestParam(defaultValue = "") String search) {
-        adminSecurityService.ensureAdminToken(headerToken);
         PageRequest pageable = PageRequest.of(Math.max(0, page - 1), pageSize, Sort.by(Sort.Direction.DESC, "createdAt"));
         Page<ClientEntity> result = clientService.listClients(search, pageable);
 
@@ -72,31 +68,28 @@ public class ClientController {
     }
 
     @GetMapping("/{clientId}")
-    public Map<String, Object> getClient(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                         @PathVariable UUID clientId) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    @PreAuthorize("hasAnyRole('ADMIN','CLIENT')")
+    public Map<String, Object> getClient(@PathVariable UUID clientId) {
+        clientService.assertCanAccess(clientId, UserContextHolder.requireUser());
         return toMap(clientService.getClient(clientId));
     }
 
     @PostMapping
-    public ClientProvisionResponse createClient(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                                @Valid @RequestBody CreateClientRequest request) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    @PreAuthorize("hasRole('ADMIN')")
+    public ClientProvisionResponse createClient(@Valid @RequestBody CreateClientRequest request) {
         return clientService.createClient(request);
     }
 
     @PatchMapping("/{clientId}")
-    public Map<String, Object> updateClient(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                            @PathVariable UUID clientId,
+    @PreAuthorize("hasRole('ADMIN')")
+    public Map<String, Object> updateClient(@PathVariable UUID clientId,
                                             @Valid @RequestBody UpdateClientRequest request) {
-        adminSecurityService.ensureAdminToken(headerToken);
         return toMap(clientService.updateClient(clientId, request));
     }
 
     @PostMapping("/{clientId}/regenerate-secret")
-    public ClientCredentialsResponse regenerateSecret(@RequestHeader("X-ADMIN-TOKEN") String headerToken,
-                                                      @PathVariable UUID clientId) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    @PreAuthorize("hasRole('ADMIN')")
+    public ClientCredentialsResponse regenerateSecret(@PathVariable UUID clientId) {
         return clientService.regenerateSecret(clientId);
     }
 

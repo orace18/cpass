@@ -3,10 +3,9 @@ package com.cpass.platform.admin.controller;
 import com.cpass.platform.billing.domain.UsageRecordEntity;
 import com.cpass.platform.billing.infra.UsageRecordRepository;
 import com.cpass.platform.client.infra.ClientRepository;
-import com.cpass.platform.common.security.AdminSecurityService;
+import org.springframework.security.access.prepost.PreAuthorize;
 import com.cpass.platform.messaging.domain.MessageChannel;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -22,23 +21,20 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/admin/billing")
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminBillingController {
 
-    private final AdminSecurityService adminSecurityService;
     private final UsageRecordRepository usageRecordRepository;
     private final ClientRepository clientRepository;
 
-    public AdminBillingController(AdminSecurityService adminSecurityService,
-                                  UsageRecordRepository usageRecordRepository,
+    public AdminBillingController(UsageRecordRepository usageRecordRepository,
                                   ClientRepository clientRepository) {
-        this.adminSecurityService = adminSecurityService;
         this.usageRecordRepository = usageRecordRepository;
         this.clientRepository = clientRepository;
     }
 
     @GetMapping
-    public List<Map<String, Object>> billing(@RequestHeader("X-ADMIN-TOKEN") String headerToken) {
-        adminSecurityService.ensureAdminToken(headerToken);
+    public List<Map<String, Object>> billing() {
         Map<String, Map<String, Object>> rows = new LinkedHashMap<>();
 
         for (UsageRecordEntity usage : usageRecordRepository.findAll()) {
