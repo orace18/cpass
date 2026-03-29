@@ -56,6 +56,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                 || path.startsWith("/clients")
                 || path.startsWith("/admin")
                 || path.startsWith("/auth")
+                || path.startsWith("/me")
                 || path.startsWith("/webhooks/delivery")) {
             return true;
         }
