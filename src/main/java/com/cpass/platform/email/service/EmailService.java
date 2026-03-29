@@ -2,6 +2,8 @@ package com.cpass.platform.email.service;
 
 import com.cpass.platform.common.exception.ApiException;
 import jakarta.mail.internet.InternetAddress;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -16,6 +18,8 @@ import java.util.UUID;
 
 @Service
 public class EmailService {
+
+    private static final Logger log = LoggerFactory.getLogger(EmailService.class);
 
     private final EmailConfigurationService emailConfigurationService;
     private final EmailBootstrapProperties bootstrapProperties;
@@ -60,6 +64,7 @@ public class EmailService {
         } catch (ApiException e) {
             throw e;
         } catch (Exception exception) {
+            log.error("SMTP send failed to={} subject={} : {}", to, subject, exception.getMessage(), exception);
             throw new ApiException(HttpStatus.BAD_GATEWAY, "EMAIL_SEND_FAILED", "Unable to send email");
         }
     }
@@ -124,6 +129,7 @@ public class EmailService {
         properties.put("mail.smtp.auth", settings.username() != null && !settings.username().isBlank());
         properties.put("mail.smtp.ssl.enable", String.valueOf(sslDirect));
         properties.put("mail.smtp.starttls.enable", String.valueOf(!sslDirect));
+        properties.put("mail.smtp.ssl.trust", settings.host());
         properties.put("mail.smtp.connectiontimeout", "5000");
         properties.put("mail.smtp.timeout", "5000");
         properties.put("mail.smtp.writetimeout", "5000");
