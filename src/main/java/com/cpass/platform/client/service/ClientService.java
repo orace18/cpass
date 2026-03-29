@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -192,6 +193,19 @@ public class ClientService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CLIENT_CREDENTIALS", "Invalid client credentials");
         }
         return client;
+    }
+
+    public Map<String, Object> toPublicMap(ClientEntity client) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("id", client.getId() == null ? null : client.getId().toString());
+        m.put("name", client.getName());
+        m.put("email", client.getEmail());
+        m.put("clientId", client.getClientId());
+        m.put("webhookUrl", client.getWebhookUrl());
+        m.put("webhookEnabled", client.isWebhookEnabled());
+        m.put("scopes", scopeValues(client));
+        m.put("createdAt", client.getCreatedAt() == null ? null : client.getCreatedAt().toString());
+        return m;
     }
 
     public Set<String> scopeValues(ClientEntity client) {

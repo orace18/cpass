@@ -17,4 +17,6 @@ public interface OtpAuditRepository extends JpaRepository<OtpAuditEntity, UUID> 
             UUID clientId, String destination, OtpStatus status, Instant after);
 
     long countByClientIdAndDestinationAndCreatedAtAfter(UUID clientId, String destination, Instant after);
+
+    org.springframework.data.domain.Page<OtpAuditEntity> findByClientIdOrderByCreatedAtDesc(UUID clientId, org.springframework.data.domain.Pageable pageable);
 }
