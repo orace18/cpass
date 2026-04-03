@@ -1,1 +1,1 @@
-DELETE FROM provider_config WHERE code = 'TWILIO';
+DELETE FROM providers WHERE code = 'TWILIO';
