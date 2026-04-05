@@ -24,7 +24,7 @@ import java.util.UUID;
 public class WhatsAppMetaProvider implements MessagingProvider {
 
     private static final Logger log = LoggerFactory.getLogger(WhatsAppMetaProvider.class);
-    private static final String BASE_URL = "https://graph.facebook.com/v18.0";
+    private static final String BASE_URL = "https://graph.facebook.com/v22.0";
 
     private final ObjectMapper objectMapper;
     private final SecretCryptoService cryptoService;
