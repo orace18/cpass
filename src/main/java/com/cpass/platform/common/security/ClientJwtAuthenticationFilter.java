@@ -50,7 +50,7 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
                 || "/auth/reset-password".equals(path)
                 || path.startsWith("/admin")
                 || path.startsWith("/clients")
-                || path.startsWith("/me");
+                || path.equals("/me") || path.startsWith("/me/");
     }
 
     @Override
