@@ -62,8 +62,8 @@ public class OtpService {
     }
 
     @Transactional
-    public OtpSendResponse sendOtp(UUID clientId, String destination) {
-        quotaService.assertQuota(clientId, MessageChannel.SMS);
+    public OtpSendResponse sendOtp(UUID clientId, String destination, MessageChannel channel) {
+        quotaService.assertQuota(clientId, channel);
         assertSendAllowed(clientId, destination);
 
         String otp = generateOtp(properties.length());
@@ -74,7 +74,7 @@ public class OtpService {
 
         OtpCacheRecord record = new OtpCacheRecord(
                 destination,
-                MessageChannel.SMS,
+                channel,
                 hash,
                 salt,
                 properties.maxVerifyAttempts(),
@@ -86,7 +86,7 @@ public class OtpService {
         audit.setClientId(clientId);
         audit.setReferenceId(reference);
         audit.setDestination(destination);
-        audit.setChannel(MessageChannel.SMS);
+        audit.setChannel(channel);
         audit.setOtpHash(hash);
         audit.setSalt(salt);
         audit.setStatus(OtpStatus.SENT);
@@ -96,7 +96,7 @@ public class OtpService {
 
         ProviderDispatchResult dispatchResult = providerRoutingService.dispatch(new ProviderMessage(
                 clientId,
-                MessageChannel.SMS,
+                channel,
                 destination,
                 properties.messageTemplate().replace("{otp}", otp),
                 null,
@@ -113,7 +113,7 @@ public class OtpService {
 
         audit.setProviderCode(dispatchResult.providerCode());
         otpAuditRepository.save(audit);
-        usageService.recordUsage(clientId, MessageChannel.SMS, dispatchResult.cost() == null ? BigDecimal.ZERO : dispatchResult.cost());
+        usageService.recordUsage(clientId, channel, dispatchResult.cost() == null ? BigDecimal.ZERO : dispatchResult.cost());
         clientWebhookEventService.enqueueOtpEvent(audit, "otp.sent");
         return new OtpSendResponse(reference, expiresAt);
     }
