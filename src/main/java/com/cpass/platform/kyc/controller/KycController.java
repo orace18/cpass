@@ -13,6 +13,8 @@ import com.cpass.platform.kyc.dto.KycUploadResponse;
 import com.cpass.platform.kyc.dto.KycVerifyRequest;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +32,8 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/kyc")
 public class KycController {
+
+    private static final Logger log = LoggerFactory.getLogger(KycController.class);
 
     private final KycService kycService;
 
@@ -70,6 +74,7 @@ public class KycController {
                                     @RequestParam KycDocumentType documentType,
                                     @RequestPart("file") MultipartFile file,
                                     @RequestPart(value = "metadata", required = false) String metadata) {
+        logUploadRequest("case-upload", caseId, documentType, file, metadata);
         return kycService.upload(ClientContextHolder.requireClientId(), caseId, documentType, file, metadata);
     }
 
@@ -79,6 +84,7 @@ public class KycController {
                                             @RequestParam KycDocumentType documentType,
                                             @RequestPart("file") MultipartFile file,
                                             @RequestPart(value = "metadata", required = false) String metadata) {
+        logUploadRequest("submit-document", caseId, documentType, file, metadata);
         return kycService.upload(ClientContextHolder.requireClientId(), caseId, documentType, file, metadata);
     }
 
@@ -104,5 +110,20 @@ public class KycController {
                 request.caseId(),
                 new KycContactVerificationRequest(request.otpReferenceId(), request.otpCode())
         );
+    }
+
+    private void logUploadRequest(String route,
+                                  UUID caseId,
+                                  KycDocumentType documentType,
+                                  MultipartFile file,
+                                  String metadata) {
+        log.info("kyc upload request route={} caseId={} documentType={} contentType={} fileSize={} originalFilename={} metadata={}",
+                route,
+                caseId,
+                documentType,
+                file.getContentType(),
+                file.getSize(),
+                file.getOriginalFilename(),
+                metadata);
     }
 }

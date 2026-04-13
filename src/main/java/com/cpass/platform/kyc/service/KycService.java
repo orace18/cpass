@@ -25,6 +25,9 @@ import com.cpass.platform.kyc.infra.KycCaseRepository;
 import com.cpass.platform.kyc.infra.KycDocumentRepository;
 import com.cpass.platform.otp.dto.OtpVerifyResponse;
 import com.cpass.platform.otp.service.OtpService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,12 +43,15 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class KycService {
+
+    private static final Logger log = LoggerFactory.getLogger(KycService.class);
 
     private final S3Client s3Client;
     private final KycDocumentRepository kycDocumentRepository;
@@ -57,6 +63,7 @@ public class KycService {
     private final KycWorkflowPublisher workflowPublisher;
     private final KycFlowService kycFlowService;
     private final KycFlowProperties kycFlowProperties;
+    private final String s3Endpoint;
     private final String bucketName;
 
     public KycService(S3Client s3Client,
@@ -69,6 +76,7 @@ public class KycService {
                       KycWorkflowPublisher workflowPublisher,
                       KycFlowService kycFlowService,
                       KycFlowProperties kycFlowProperties,
+                      @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.endpoint}") String s3Endpoint,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.bucket}") String bucketName) {
         this.s3Client = s3Client;
         this.kycDocumentRepository = kycDocumentRepository;
@@ -80,6 +88,7 @@ public class KycService {
         this.workflowPublisher = workflowPublisher;
         this.kycFlowService = kycFlowService;
         this.kycFlowProperties = kycFlowProperties;
+        this.s3Endpoint = s3Endpoint;
         this.bucketName = bucketName;
     }
 
@@ -134,26 +143,77 @@ public class KycService {
                                     MultipartFile file,
                                     String metadataJson) {
         KycCaseEntity kycCase = requireClientCase(clientId, caseId);
+        String mappedProviderType = mapDocumentTypeToProviderType(documentType);
+        String originalFileName = file.getOriginalFilename();
+        String incomingContentType = file.getContentType();
+        long incomingFileSize = file.getSize();
         try {
-            String objectKey = clientId + "/" + kycCase.getReferenceId() + "/" + Instant.now().toEpochMilli() + "-" + file.getOriginalFilename();
+            byte[] fileBytes = file.getBytes();
+            String resolvedFileName = resolveFileName(file, documentType);
+            String mimeType = resolveContentType(file);
+
+            log.info("kyc upload service start clientId={} caseId={} documentType={} mappedProviderType={} fileBytes={} fileName={} originalFileName={} mimeType={} metadata={}",
+                    clientId,
+                    caseId,
+                    documentType,
+                    mappedProviderType,
+                    fileBytes.length,
+                    resolvedFileName,
+                    originalFileName,
+                    mimeType,
+                    metadataJson);
+
+            if (originalFileName == null || originalFileName.isBlank()) {
+                log.warn("kyc upload missing multipart filename caseId={} documentType={} generatedFileName={}",
+                        caseId,
+                        documentType,
+                        resolvedFileName);
+            }
+            if (fileBytes.length == 0) {
+                log.warn("kyc upload received empty file payload caseId={} documentType={} fileName={}",
+                        caseId,
+                        documentType,
+                        resolvedFileName);
+            }
+
+            String objectKey = clientId + "/" + kycCase.getReferenceId() + "/" + Instant.now().toEpochMilli() + "-" + resolvedFileName;
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                     .bucket(bucketName)
                     .key(objectKey)
-                    .contentType(file.getContentType())
+                    .contentType(mimeType)
                     .build();
-            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(file.getBytes()));
+            log.info("kyc upload storage request provider=S3 endpoint={} bucket={} objectKey={} fileSize={} contentType={}",
+                    s3Endpoint,
+                    bucketName,
+                    objectKey,
+                    fileBytes.length,
+                    mimeType);
+            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(fileBytes));
+            log.info("kyc upload storage success provider=S3 bucket={} objectKey={} bytesWritten={}",
+                    bucketName,
+                    objectKey,
+                    fileBytes.length);
 
             DocumentAnalysisService.DocumentAnalysisResult analysis = documentAnalysisService.analyze(metadataJson);
+            log.info("kyc upload analysis documentType={} mappedProviderType={} fileBytes={} fileName={} mimeType={} validityStatus={} documentNumberPresent={} expiryDate={}",
+                    documentType,
+                    mappedProviderType,
+                    fileBytes.length,
+                    resolvedFileName,
+                    mimeType,
+                    analysis.validityStatus(),
+                    analysis.documentNumber() != null,
+                    analysis.expiryDate());
 
             KycDocumentEntity document = new KycDocumentEntity();
             document.setClientId(clientId);
             document.setKycCase(kycCase);
             document.setDocumentType(documentType);
-            document.setFileName(file.getOriginalFilename());
+            document.setFileName(resolvedFileName);
             document.setObjectKey(objectKey);
             document.setBucketName(bucketName);
-            document.setContentType(file.getContentType());
-            document.setSizeBytes(file.getSize());
+            document.setContentType(mimeType);
+            document.setSizeBytes(fileBytes.length);
             document.setStatus(KycDocumentStatus.PENDING);
             document.setMetadataJson(metadataJson);
             document.setDocumentNumber(analysis.documentNumber());
@@ -162,6 +222,13 @@ public class KycService {
             KycDocumentEntity saved = kycDocumentRepository.save(document);
             saved.setPreviewPath("/admin/kyc/documents/" + saved.getId() + "/download");
             kycDocumentRepository.save(saved);
+            log.info("kyc upload persisted documentId={} caseId={} documentType={} objectKey={} status={} validityStatus={}",
+                    saved.getId(),
+                    caseId,
+                    documentType,
+                    saved.getObjectKey(),
+                    saved.getStatus(),
+                    saved.getValidityStatus());
 
             Map<String, Object> caseMetadata = metadataOf(kycCase);
             caseMetadata.putIfAbsent("fullName", kycCase.getIdentity().getFullName());
@@ -176,8 +243,21 @@ public class KycService {
             kycCaseRepository.save(kycCase);
 
             workflowPublisher.publish(kycCase.getId());
+            log.info("kyc upload completed caseId={} documentId={} workflowTriggered=true", caseId, saved.getId());
             return new KycUploadResponse(saved.getId(), saved.getStatus(), saved.getObjectKey(), saved.getValidityStatus());
         } catch (Exception exception) {
+            log.error("kyc upload failed clientId={} caseId={} documentType={} mappedProviderType={} originalFileName={} contentType={} fileSize={} metadata={} failureType={} failureMessage={}",
+                    clientId,
+                    caseId,
+                    documentType,
+                    mappedProviderType,
+                    originalFileName,
+                    incomingContentType,
+                    incomingFileSize,
+                    metadataJson,
+                    exception.getClass().getName(),
+                    exception.getMessage(),
+                    exception);
             throw new ApiException(HttpStatus.BAD_GATEWAY, "KYC_UPLOAD_FAILED", "Failed to upload KYC document");
         }
     }
@@ -430,6 +510,43 @@ public class KycService {
 
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String mapDocumentTypeToProviderType(KycDocumentType documentType) {
+        return documentType.name();
+    }
+
+    private String resolveFileName(MultipartFile file, KycDocumentType documentType) {
+        String originalFileName = sanitizeFileName(file.getOriginalFilename());
+        if (!originalFileName.isBlank()) {
+            return originalFileName;
+        }
+        return documentType.name().toLowerCase(Locale.ROOT) + "-" + UUID.randomUUID() + extensionFor(resolveContentType(file));
+    }
+
+    private String sanitizeFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return "";
+        }
+        String normalized = fileName.replace("\\", "/");
+        int lastSeparator = normalized.lastIndexOf('/');
+        return (lastSeparator >= 0 ? normalized.substring(lastSeparator + 1) : normalized).trim();
+    }
+
+    private String resolveContentType(MultipartFile file) {
+        String contentType = file.getContentType();
+        return contentType == null || contentType.isBlank() ? MediaType.APPLICATION_OCTET_STREAM_VALUE : contentType;
+    }
+
+    private String extensionFor(String contentType) {
+        String normalized = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case MediaType.IMAGE_JPEG_VALUE, "image/jpg" -> ".jpg";
+            case MediaType.IMAGE_PNG_VALUE -> ".png";
+            case "image/webp" -> ".webp";
+            case MediaType.APPLICATION_PDF_VALUE -> ".pdf";
+            default -> "";
+        };
     }
 
     private record ReuseDecision(KycReuseStatus status, KycCaseEntity sourceCase) {
