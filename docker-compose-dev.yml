@@ -66,8 +66,7 @@ services:
       - APP_KYC_S3_ENDPOINT=${S3_ENDPOINT:-http://10.20.20.10:32428}
       - APP_KYC_S3_BUCKET=${S3_BUCKET:-cpass-kyc}
       - APP_KYC_S3_ACCESS_KEY=${S3_ACCESS_KEY:-admin@owomi_minio}
-      - APP_KYC_S3_SECRET_KEY=${S3_SECRET_KEY:-N72wk7vAMP#Z5nc2ZL~eR8vw54548v68#Fd@e559CdsfZfdFk}
-
+      - APP_KYC_S3_SECRET_KEY=#{{'${S3_SECRET_KEY}'}}
       - APP_EMAIL_BOOTSTRAP_ENABLED=true
       - APP_EMAIL_BOOTSTRAP_HOST=${SMTP_HOST:-mail.clubchretien.org}
       - APP_EMAIL_BOOTSTRAP_PORT=${SMTP_PORT:-465}
