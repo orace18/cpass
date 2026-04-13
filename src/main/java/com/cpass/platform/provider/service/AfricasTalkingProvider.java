@@ -88,7 +88,7 @@ public class AfricasTalkingProvider implements MessagingProvider {
             int statusCode = recipient.path("statusCode").asInt(-1);
             String messageId = recipient.path("messageId").asText("");
 
-            if (statusCode == 101 || statusCode == 102) {
+            if (statusCode == 100 || statusCode == 101 || statusCode == 102) {
                 log.info("AfricasTalking SMS sent to {} - messageId={}", message.recipient(), messageId);
                 return ProviderDispatchResult.success(providerCode(), messageId, cost);
             } else {

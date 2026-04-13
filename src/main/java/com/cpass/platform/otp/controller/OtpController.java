@@ -27,7 +27,7 @@ public class OtpController {
     @PostMapping("/send")
     public OtpSendResponse send(@Valid @RequestBody OtpSendRequest request) {
         UUID clientId = ClientContextHolder.requireClientId();
-        return otpService.sendOtp(clientId, request.destination());
+        return otpService.sendOtp(clientId, request.destination(), request.channel());
     }
 
     @PostMapping("/verify")

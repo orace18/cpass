@@ -41,7 +41,7 @@ public class UserJwtAuthenticationFilter extends OncePerRequestFilter {
         }
         return !(path.startsWith("/admin")
                 || path.startsWith("/clients")
-                || path.startsWith("/me"));
+                || path.equals("/me") || path.startsWith("/me/"));
     }
 
     @Override
