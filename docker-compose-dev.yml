@@ -32,6 +32,7 @@ services:
     networks:
       - cpass_net
 
+
   spring-app:
     image: ${IMAGE_FULL}
     container_name: ${CI_PROJECT_NAME}
