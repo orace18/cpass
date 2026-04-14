@@ -65,7 +65,7 @@ services:
       - APP_OTP_HASH_PEPPER=${OTP_HASH_PEPPER:-replace-with-long-random-pepper}
 
       # MinIO S3 API port, not the web console port
-      - APP_KYC_S3_ENDPOINT=${MINIO_URL}
+      - APP_KYC_S3_ENDPOINT=https://${MINIO_URL}
       - APP_KYC_S3_BUCKET=${MINIO_BUCKET_NAME}
       - APP_KYC_S3_ACCESS_KEY=${MINIO_USER}
       - APP_KYC_S3_SECRET_KEY=${MINIO_PASSWORD}
