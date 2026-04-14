@@ -182,14 +182,26 @@ public class KycService {
                     .key(objectKey)
                     .contentType(mimeType)
                     .build();
-            log.info("kyc upload storage request provider=S3 endpoint={} bucket={} objectKey={} fileSize={} contentType={}",
+            log.info("kyc upload storage start provider=S3 endpoint={} bucket={} objectKey={} contentType={} size={}",
                     s3Endpoint,
                     bucketName,
                     objectKey,
-                    fileBytes.length,
-                    mimeType);
-            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(fileBytes));
-            log.info("kyc upload storage success provider=S3 bucket={} objectKey={} bytesWritten={}",
+                    mimeType,
+                    fileBytes.length);
+            try {
+                s3Client.putObject(putObjectRequest, RequestBody.fromBytes(fileBytes));
+            } catch (Exception storageException) {
+                log.error("kyc upload storage failed provider=S3 endpoint={} bucket={} objectKey={} errorType={} errorMessage={}",
+                        s3Endpoint,
+                        bucketName,
+                        objectKey,
+                        storageException.getClass().getName(),
+                        storageException.getMessage(),
+                        storageException);
+                throw storageException;
+            }
+            log.info("kyc upload storage success provider=S3 endpoint={} bucket={} objectKey={} bytesWritten={}",
+                    s3Endpoint,
                     bucketName,
                     objectKey,
                     fileBytes.length);
