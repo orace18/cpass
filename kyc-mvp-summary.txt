@@ -1,0 +1,232 @@
+==============================================================================
+KYC MVP — Identity Verification API
+Summary of implementation
+==============================================================================
+
+OBJECTIVE
+---------
+Server-side MVP identity verification pipeline focused on the core step:
+  STEP_4_FACE_VERIFIED
+
+The client uploads only raw files. All sensitive checks (OCR, face match,
+expiry validation, scoring) are performed exclusively on the server.
+No client-provided OCR results, face hashes, or match scores are trusted.
+
+
+API ENDPOINTS
+-------------
+
+POST /kyc/identity-verification/init
+  Auth: SCOPE_kyc:write
+  Body: { referenceId, documentType, firstName, lastName, phoneNumber }
+  Returns: { verificationId, status: "INITIATED" }
+
+POST /kyc/identity-verification/{verificationId}/upload
+  Auth: SCOPE_kyc:write
+  Multipart: documentFront (required), documentBack (optional), selfie (required)
+  Params: captureDevice, appVersion, platform (all optional)
+  Returns: { verificationId, status: "PROCESSING" }
+  Note: triggers async processing via RabbitMQ
+
+GET /kyc/identity-verification/{verificationId}
+  Auth: SCOPE_kyc:read
+  Returns full result once processing is complete:
+  {
+    verificationId, status, currentStep,
+    documentAnalysis: { documentReadable, documentExpired, documentType,
+                        documentNumber (masked), fullName, dateOfBirth, expiryDate },
+    faceMatch: { matched, score },
+    reliabilityScore,
+    scoreDetails: { documentReadability, ocrConfidence, documentValidity, faceMatch },
+    decisionReason
+  }
+
+ADMIN ENDPOINTS (role ADMIN required)
+--------------------------------------
+GET  /admin/kyc/identity-verifications           — list all (optional ?status= filter)
+GET  /admin/kyc/identity-verifications/{id}      — get full details (unmasked)
+POST /admin/kyc/identity-verifications/{id}/review
+  Body: { status: "APPROVED|REJECTED|REVIEW", reason: "..." }
+
+
+PROCESSING PIPELINE (async via RabbitMQ)
+-----------------------------------------
+Queue: cpass.identity.verification.queue (configurable)
+
+1. Download document front from S3
+2. Run OCR via OcrService (StubOcrService in MVP)
+   - Extracts: fullName, documentNumber, dateOfBirth, expiryDate, nationality, portraitBytes
+3. Check document expiry
+4. Download selfie from S3
+5. Run face comparison via FaceMatchService (StubFaceMatchService in MVP)
+   - Compares: document portrait vs selfie
+   - Returns: matched (bool), score (0-100)
+6. Compute reliability score via VerificationScoringService
+7. Determine final status
+8. Persist VerificationAnalysisEntity
+9. Update IdentityVerificationEntity
+
+
+SCORING ENGINE
+--------------
+Weighted sum formula (configurable, defaults sum to 100):
+
+  Component            Weight   Raw Score Basis
+  ---------------------------------------------------
+  documentReadability    25     100 if readable, 40 if low-conf unreadable, 10 if unreadable
+  ocrConfidence          20     OCR confidence value (0-100) from OcrService
+  documentValidity       20     100 if valid, 50 if expiry unknown, 0 if expired
+  faceMatch              35     Score (0-100) from FaceMatchService
+
+  reliabilityScore = sum of weighted contributions
+
+Decision thresholds (configurable):
+  score >= 75 → APPROVED    (decisionReason: FACE_MATCH_OK_AND_DOCUMENT_VALID)
+  score >= 50 → REVIEW      (decisionReason: LOW_CONFIDENCE_SCORE or FACE_MISMATCH)
+  score <  50 → REJECTED    (decisionReason: INSUFFICIENT_RELIABILITY_SCORE)
+
+Override rules (take precedence over score):
+  document unreadable + confidence < 30 → REJECTED (DOCUMENT_UNREADABLE)
+  document unreadable + confidence >= 30 → REVIEW   (DOCUMENT_UNREADABLE)
+  document expired                       → REJECTED (DOCUMENT_EXPIRED)
+  face score < faceMatchThreshold (75)   → REVIEW   (FACE_MISMATCH)
+
+
+DATA MODEL
+----------
+identity_verifications
+  id, client_id, reference_id, status, current_step, document_type,
+  first_name, last_name, phone_number, reliability_score, decision_reason,
+  created_at, updated_at
+
+verification_documents
+  id, verification_id (FK), document_front_key, document_back_key, selfie_key,
+  bucket_name, storage_provider, capture_device, app_version, platform, uploaded_at
+
+verification_analysis
+  id, verification_id (FK, unique), document_readable, ocr_confidence,
+  extracted_full_name, extracted_document_number, extracted_birth_date,
+  extracted_expiry_date, extracted_nationality, document_expired,
+  face_match_score, face_matched, score_details_json, analyzed_at
+
+
+NEW FILES CREATED
+-----------------
+Domain (enums):
+  kyc/domain/VerificationStatus.java        — INITIATED, PROCESSING, APPROVED, REVIEW, REJECTED
+  kyc/domain/VerificationStep.java          — DOCUMENT_ANALYSIS, FACE_MATCH, COMPLETED
+  kyc/domain/VerificationDocumentType.java  — NATIONAL_ID, PASSPORT, DRIVER_LICENSE
+
+Domain (entities):
+  kyc/domain/IdentityVerificationEntity.java
+  kyc/domain/VerificationDocumentEntity.java
+  kyc/domain/VerificationAnalysisEntity.java
+
+Repositories:
+  kyc/infra/IdentityVerificationRepository.java
+  kyc/infra/VerificationDocumentRepository.java
+  kyc/infra/VerificationAnalysisRepository.java
+
+DTOs:
+  kyc/dto/InitVerificationRequest.java
+  kyc/dto/InitVerificationResponse.java
+  kyc/dto/UploadVerificationResponse.java
+  kyc/dto/VerificationResponse.java         — includes nested DocumentAnalysisDto, FaceMatchDto, ScoreDetailsDto
+  kyc/dto/AdminVerificationReviewRequest.java
+
+Services:
+  kyc/service/VerificationProperties.java       — all thresholds, weights, stub config
+  kyc/service/OcrService.java                   — interface (must be replaced with real provider)
+  kyc/service/StubOcrService.java               — MVP stub (simulates readable document)
+  kyc/service/FaceMatchService.java             — interface (must be replaced with real provider)
+  kyc/service/StubFaceMatchService.java         — MVP stub (returns configurable score)
+  kyc/service/VerificationScoringService.java   — weighted scoring + decision rules
+  kyc/service/VerificationProcessingEvent.java  — RabbitMQ event record
+  kyc/service/VerificationWorkflowPublisher.java — publishes to queue (falls back to sync)
+  kyc/service/VerificationWorkflowConsumer.java  — RabbitMQ listener
+  kyc/service/VerificationFlowService.java       — core processing pipeline
+  kyc/service/IdentityVerificationService.java   — CRUD + response building
+
+Controllers:
+  kyc/controller/IdentityVerificationController.java
+  admin/controller/AdminIdentityVerificationController.java
+
+Database:
+  db/migration/V10__identity_verification.sql
+
+Modified files:
+  common/config/RabbitMqConfig.java   — added identityVerification queue/exchange/binding
+  application.properties              — added all app.kyc.verification.* config keys
+
+
+CONFIGURATION KEYS (application.properties)
+--------------------------------------------
+app.kyc.verification.face-match-threshold=75           (env: KYC_VERIF_FACE_MATCH_THRESHOLD)
+app.kyc.verification.auto-approve-score-threshold=75   (env: KYC_VERIF_AUTO_APPROVE_SCORE)
+app.kyc.verification.review-score-threshold=50         (env: KYC_VERIF_REVIEW_SCORE)
+app.kyc.verification.validity-days=365                 (env: KYC_VERIF_VALIDITY_DAYS)
+app.kyc.verification.async-enabled=true                (env: KYC_VERIF_ASYNC_ENABLED)
+app.kyc.verification.score-weight.document-readability=25 (env: KYC_VERIF_WEIGHT_READABILITY)
+app.kyc.verification.score-weight.ocr-confidence=20    (env: KYC_VERIF_WEIGHT_OCR)
+app.kyc.verification.score-weight.document-validity=20 (env: KYC_VERIF_WEIGHT_VALIDITY)
+app.kyc.verification.score-weight.face-match=35        (env: KYC_VERIF_WEIGHT_FACE)
+app.kyc.verification.stub.face-match-score=80          (env: KYC_VERIF_STUB_FACE_SCORE)
+app.kyc.verification.messaging.exchange=cpass.identity.verification.exchange
+app.kyc.verification.messaging.queue=cpass.identity.verification.queue
+app.kyc.verification.messaging.routing-key=cpass.identity.verification.process
+
+
+ERROR CODES
+-----------
+INVALID_FILE_FORMAT          — unsupported MIME type or missing required file
+VERIFICATION_NOT_FOUND       — no verification for this client+ID combination
+VERIFICATION_ALREADY_SUBMITTED — upload called twice on same verification
+PROCESSING_FAILED            — S3 storage or broker error during upload
+DOCUMENT_UNREADABLE          — OCR could not read the document
+DOCUMENT_EXPIRED             — document expiry date is in the past
+FACE_MISMATCH                — face match score below threshold
+FACE_NOT_DETECTED            — face match service could not detect faces
+INSUFFICIENT_RELIABILITY_SCORE — final score below minimum threshold
+LOW_CONFIDENCE_SCORE         — score in review range (50–74)
+FACE_MATCH_OK_AND_DOCUMENT_VALID — all checks passed (APPROVED)
+
+
+STUB SERVICES — PRODUCTION REPLACEMENT PLAN
+--------------------------------------------
+StubOcrService (OcrService interface)
+  → Replace with: AWS Textract, Google Cloud Vision, Azure Form Recognizer,
+                  or an on-premise Tesseract/PaddleOCR integration.
+  → The real implementation must extract: fullName, documentNumber, dateOfBirth,
+    expiryDate, nationality, and the portrait face region from the document image.
+
+StubFaceMatchService (FaceMatchService interface)
+  → Replace with: AWS Rekognition CompareFaces, Azure Face API,
+                  or an on-premise InsightFace/DeepFace model.
+  → The real implementation must compare two face images and return a
+    similarity score (0–100) and a matched boolean.
+
+Neither stub reads or accepts client-provided values — this contract
+must be preserved in all real implementations.
+
+
+SECURITY NOTES
+--------------
+- Files are stored in S3/MinIO. Object keys include client_id prefix
+  for logical isolation.
+- Document numbers are masked in client-facing responses (AB**7890 format).
+- Admin responses expose full unmasked data.
+- File content is never logged — only size, MIME type, and object key.
+- All endpoints enforce client isolation via JWT clientId claim.
+- Cross-client access to verifications returns 404, not 403, to avoid
+  enumeration of other clients' verification IDs.
+
+
+STATUS FLOW
+-----------
+  INITIATED ──upload──► PROCESSING ──pipeline──► APPROVED
+                                              └──► REVIEW
+                                              └──► REJECTED
+
+  Any status can be manually overridden by an admin via the review endpoint.
+
+==============================================================================

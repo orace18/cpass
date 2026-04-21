@@ -64,6 +64,25 @@ public class RabbitMqConfig {
     }
 
     @Bean
+    public Queue identityVerificationQueue(
+            @Value("${app.kyc.verification.messaging.queue:cpass.identity.verification.queue}") String queueName) {
+        return new Queue(queueName, true);
+    }
+
+    @Bean
+    public DirectExchange identityVerificationExchange(
+            @Value("${app.kyc.verification.messaging.exchange:cpass.identity.verification.exchange}") String exchangeName) {
+        return new DirectExchange(exchangeName, true, false);
+    }
+
+    @Bean
+    public Binding identityVerificationBinding(Queue identityVerificationQueue,
+                                               DirectExchange identityVerificationExchange,
+                                               @Value("${app.kyc.verification.messaging.routing-key:cpass.identity.verification.process}") String routingKey) {
+        return BindingBuilder.bind(identityVerificationQueue).to(identityVerificationExchange).with(routingKey);
+    }
+
+    @Bean
     public Jackson2JsonMessageConverter jackson2JsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
     }
