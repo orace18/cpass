@@ -98,7 +98,9 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
         } catch (ApiException exception) {
             response.setStatus(exception.getStatus().value());
             response.setContentType("application/json");
-            response.getWriter().write("{\"code\":\"" + exception.getCode() + "\",\"message\":\"" + exception.getMessage() + "\"}");
+            response.getWriter().write("{\"code\":\"" + exception.getCode()
+                    + "\",\"message\":\"" + exception.getMessage()
+                    + "\",\"requestId\":\"" + RequestCorrelation.requestId() + "\"}");
         }
     }
 

@@ -2,6 +2,7 @@ package com.cpass.platform.common.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
+import com.cpass.platform.common.security.RequestCorrelation;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.http.HttpStatus;
@@ -26,7 +27,8 @@ public class GlobalExceptionHandler {
                 exception.getCode(),
                 exception.getMessage(),
                 request.getRequestURI(),
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.status(exception.getStatus()).body(response);
     }
@@ -51,7 +53,8 @@ public class GlobalExceptionHandler {
                 "VALIDATION_ERROR",
                 "Request validation failed",
                 request.getRequestURI(),
-                details
+                details,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.badRequest().body(response);
     }
@@ -68,7 +71,8 @@ public class GlobalExceptionHandler {
                 "CONSTRAINT_VIOLATION",
                 "Constraint violation",
                 request.getRequestURI(),
-                details
+                details,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.badRequest().body(response);
     }
@@ -82,7 +86,8 @@ public class GlobalExceptionHandler {
                 "AUTHENTICATION_FAILED",
                 exception.getMessage(),
                 request.getRequestURI(),
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
     }
@@ -96,7 +101,8 @@ public class GlobalExceptionHandler {
                 "ACCESS_DENIED",
                 exception.getMessage(),
                 request.getRequestURI(),
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
     }
@@ -110,7 +116,8 @@ public class GlobalExceptionHandler {
                 "RESOURCE_NOT_FOUND",
                 exception.getMessage(),
                 request.getRequestURI(),
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
     }
@@ -123,7 +130,8 @@ public class GlobalExceptionHandler {
                 "INTERNAL_ERROR",
                 exception.getMessage(),
                 request.getRequestURI(),
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }

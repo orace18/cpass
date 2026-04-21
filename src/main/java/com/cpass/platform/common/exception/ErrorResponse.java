@@ -12,6 +12,7 @@ public record ErrorResponse(
         String code,
         String message,
         String path,
-        List<String> details
+        List<String> details,
+        String requestId
 ) {
 }

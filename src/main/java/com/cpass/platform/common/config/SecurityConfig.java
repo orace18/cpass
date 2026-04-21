@@ -1,7 +1,10 @@
 package com.cpass.platform.common.config;
 
 import com.cpass.platform.common.security.AuditLogFilter;
+import com.cpass.platform.common.security.ApiAuthenticationFilter;
 import com.cpass.platform.common.security.ClientJwtAuthenticationFilter;
+import com.cpass.platform.common.security.RequestCorrelation;
+import com.cpass.platform.common.security.RequestCorrelationFilter;
 import com.cpass.platform.common.security.UserJwtAuthenticationFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -32,6 +35,8 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    UserJwtAuthenticationFilter userJwtAuthenticationFilter,
                                                    ClientJwtAuthenticationFilter clientJwtAuthenticationFilter,
+                                                   ApiAuthenticationFilter apiAuthenticationFilter,
+                                                   RequestCorrelationFilter requestCorrelationFilter,
                                                    AuditLogFilter auditLogFilter) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -54,17 +59,21 @@ public class SecurityConfig {
                         .authenticationEntryPoint((request, response, exception) -> {
                             response.setStatus(401);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                            response.getWriter().write("{\"code\":\"AUTH_REQUIRED\",\"message\":\"Authentication is required\"}");
+                            response.getWriter().write("{\"code\":\"AUTH_REQUIRED\",\"message\":\"Authentication is required\",\"requestId\":\""
+                                    + RequestCorrelation.requestId() + "\"}");
                         })
                         .accessDeniedHandler((request, response, exception) -> {
                             response.setStatus(403);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                            response.getWriter().write("{\"code\":\"ACCESS_DENIED\",\"message\":\"Access denied\"}");
+                            response.getWriter().write("{\"code\":\"ACCESS_DENIED\",\"message\":\"Access denied\",\"requestId\":\""
+                                    + RequestCorrelation.requestId() + "\"}");
                         })
                 )
-                .addFilterBefore(userJwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(requestCorrelationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(userJwtAuthenticationFilter, RequestCorrelationFilter.class)
                 .addFilterAfter(clientJwtAuthenticationFilter, UserJwtAuthenticationFilter.class)
-                .addFilterAfter(auditLogFilter, ClientJwtAuthenticationFilter.class)
+                .addFilterAfter(apiAuthenticationFilter, ClientJwtAuthenticationFilter.class)
+                .addFilterAfter(auditLogFilter, ApiAuthenticationFilter.class)
                 .cors(Customizer.withDefaults());
         return http.build();
     }
@@ -75,7 +84,7 @@ public class SecurityConfig {
         config.setAllowedOrigins(allowedOrigins);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
-        config.setExposedHeaders(List.of("Authorization", "X-ADMIN-TOKEN"));
+        config.setExposedHeaders(List.of("Authorization", "X-ADMIN-TOKEN", RequestCorrelation.REQUEST_ID_HEADER, RequestCorrelation.CORRELATION_ID_HEADER));
         config.setAllowCredentials(false);
         config.setMaxAge(3600L);
 

@@ -1,0 +1,8 @@
+ALTER TABLE kyc_documents
+    ALTER COLUMN status TYPE VARCHAR(40);
+
+ALTER TABLE kyc_cases
+    ALTER COLUMN status TYPE VARCHAR(40);
+
+ALTER TABLE identity_kyc
+    ALTER COLUMN status TYPE VARCHAR(40);

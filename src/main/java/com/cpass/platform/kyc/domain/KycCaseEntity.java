@@ -40,7 +40,7 @@ public class KycCaseEntity {
     private KycLevel level;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 40)
     private KycCaseStatus status;
 
     @Column

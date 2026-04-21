@@ -8,5 +8,6 @@ public enum KycCaseStatus {
     SOCIAL_VALIDATED,
     APPROVED,
     REJECTED,
-    REVIEW
+    REVIEW,
+    RESUBMISSION_REQUIRED
 }

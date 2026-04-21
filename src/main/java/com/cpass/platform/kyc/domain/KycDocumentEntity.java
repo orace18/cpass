@@ -52,7 +52,7 @@ public class KycDocumentEntity {
     private long sizeBytes;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 40)
     private KycDocumentStatus status;
 
     @Column(name = "document_number")

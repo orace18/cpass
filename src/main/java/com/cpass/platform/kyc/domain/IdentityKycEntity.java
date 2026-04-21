@@ -34,7 +34,7 @@ public class IdentityKycEntity {
     private KycLevel level;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 40)
     private KycCaseStatus status;
 
     @Column(name = "valid_until")

@@ -2,6 +2,8 @@ package com.cpass.platform.kyc.controller;
 
 import com.cpass.platform.common.security.ClientContextHolder;
 import com.cpass.platform.common.security.ClientPrincipal;
+import com.cpass.platform.common.security.RequestCorrelation;
+import com.cpass.platform.common.exception.ApiException;
 import com.cpass.platform.kyc.domain.KycDocumentType;
 import com.cpass.platform.kyc.dto.KycCaseResponse;
 import com.cpass.platform.kyc.dto.KycCheckOrInitRequest;
@@ -15,6 +17,7 @@ import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -61,6 +64,14 @@ public class KycController {
         return kycService.getCase(ClientContextHolder.requireClientId(), caseId);
     }
 
+    @GetMapping("/status")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:read')")
+    public KycCaseResponse getStatus(@RequestParam UUID caseId) {
+        UUID clientId = ClientContextHolder.requireClientId();
+        log.info("kyc status request requestId={} clientId={} caseId={}", RequestCorrelation.requestId(), clientId, caseId);
+        return kycService.getCase(clientId, caseId);
+    }
+
     @PostMapping("/cases/{caseId}/contact-verify")
     @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
     public KycCaseResponse verifyContact(@PathVariable UUID caseId,
@@ -102,7 +113,7 @@ public class KycController {
         return kycService.recordSocialValidation(ClientContextHolder.requireClientId(), caseId, request);
     }
 
-    @PostMapping("/verify")
+    @PostMapping(value = "/verify", consumes = MediaType.APPLICATION_JSON_VALUE)
     @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
     public KycCaseResponse verify(@Valid @RequestBody KycVerifyRequest request) {
         return kycService.verifyContact(
@@ -112,12 +123,61 @@ public class KycController {
         );
     }
 
+    @PostMapping(value = "/verify", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('SCOPE_kyc:write')")
+    public KycCaseResponse verifyMvp(@Valid @RequestPart("identity") KycCheckOrInitRequest identity,
+                                     @RequestParam KycDocumentType documentType,
+                                     @RequestPart("document") MultipartFile document,
+                                     @RequestPart("selfie") MultipartFile selfie,
+                                     @RequestPart(value = "documentMetadata", required = false) String documentMetadata,
+                                     @RequestPart(value = "selfieMetadata", required = false) String selfieMetadata) {
+        ClientPrincipal principal = ClientContextHolder.requireClient();
+        if (!isSupportedIdentityDocument(documentType)) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "UNSUPPORTED_DOCUMENT_TYPE",
+                    "documentType must be PASSPORT, NATIONAL_ID, VOTER_CARD or DRIVER_LICENSE"
+            );
+        }
+
+        log.info("kyc verify request requestId={} clientId={} documentType={} userId={} documentFile={} selfieFile={}",
+                RequestCorrelation.requestId(),
+                principal.clientId(),
+                documentType,
+                identity.userId(),
+                document.getOriginalFilename(),
+                selfie.getOriginalFilename());
+
+        KycCheckOrInitResponse init = kycService.checkOrInit(principal.clientId(), principal.kycLevelRequired(), identity);
+        kycService.upload(principal.clientId(), init.kycCaseId(), documentType, document, documentMetadata);
+        kycService.upload(principal.clientId(), init.kycCaseId(), KycDocumentType.SELFIE, selfie, selfieMetadata);
+        KycCaseResponse response = kycService.getCase(principal.clientId(), init.kycCaseId());
+
+        log.info("kyc verify completed requestId={} clientId={} caseId={} caseStatus={} productStatus={} reasonCode={} nextAction={}",
+                RequestCorrelation.requestId(),
+                principal.clientId(),
+                init.kycCaseId(),
+                response.caseStatus(),
+                response.productStatus(),
+                response.reasonCode(),
+                response.nextAction());
+        return response;
+    }
+
+    private boolean isSupportedIdentityDocument(KycDocumentType documentType) {
+        return documentType == KycDocumentType.PASSPORT
+                || documentType == KycDocumentType.NATIONAL_ID
+                || documentType == KycDocumentType.VOTER_CARD
+                || documentType == KycDocumentType.DRIVER_LICENSE;
+    }
+
     private void logUploadRequest(String route,
                                   UUID caseId,
                                   KycDocumentType documentType,
                                   MultipartFile file,
                                   String metadata) {
-        log.info("kyc upload request route={} caseId={} documentType={} contentType={} fileSize={} originalFilename={} metadata={}",
+        log.info("kyc upload request requestId={} route={} caseId={} documentType={} contentType={} fileSize={} originalFilename={} metadata={}",
+                RequestCorrelation.requestId(),
                 route,
                 caseId,
                 documentType,

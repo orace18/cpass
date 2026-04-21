@@ -10,6 +10,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -128,6 +131,13 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                     apiKey.getClient().getScopes(),
                     apiKey.getClient().getKycLevelRequired()
             ));
+            SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                    ClientContextHolder.requireClient(),
+                    null,
+                    apiKey.getClient().getScopes().stream()
+                            .map(scope -> new SimpleGrantedAuthority(scope.authority()))
+                            .toList()
+            ));
             apiKey.markUsedNow();
             apiKeyRepository.save(apiKey);
 
@@ -135,6 +145,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                 filterChain.doFilter(wrappedRequest, response);
             } finally {
                 ClientContextHolder.clear();
+                SecurityContextHolder.clearContext();
             }
         } catch (Exception exception) {
             reject(response, HttpStatus.UNAUTHORIZED, "AUTH_VALIDATION_FAILED", exception.getMessage());
@@ -166,7 +177,8 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                 code,
                 message,
                 null,
-                null
+                null,
+                RequestCorrelation.requestId()
         );
         response.setStatus(status.value());
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
