@@ -6,6 +6,7 @@ Related documents:
 
 - `docs/kyc-integration-quickstart.md`: step-by-step integrator quickstart and UX messages.
 - `docs/kyc-poc-readiness.md`: pilot onboarding, demo plan, MVP positioning and V2 roadmap.
+- `docs/kyc-prod-readiness.md`: monitoring, metrics, hardening and data-driven V2 loop.
 
 ## Integrator Contract Summary
 

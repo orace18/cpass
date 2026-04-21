@@ -1,5 +1,6 @@
 package com.cpass.platform.kyc.service;
 
+import com.cpass.platform.common.security.RequestCorrelation;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -32,33 +33,35 @@ public class KycWorkflowPublisher {
     }
 
     public void publish(UUID caseId) {
+        String requestId = RequestCorrelation.requestId();
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    doPublish(caseId);
+                    doPublish(caseId, requestId);
                 }
             });
-            log.info("kyc workflow publish scheduled afterCommit caseId={}", caseId);
+            log.info("kyc workflow publish scheduled afterCommit requestId={} caseId={}", requestId, caseId);
             return;
         }
-        doPublish(caseId);
+        doPublish(caseId, requestId);
     }
 
-    private void doPublish(UUID caseId) {
+    private void doPublish(UUID caseId, String requestId) {
         if (properties.asyncEnabled()) {
             try {
-                rabbitTemplate.convertAndSend(exchange, routingKey, new KycCaseProcessingEvent(caseId));
-                log.info("kyc workflow event published caseId={} mode=async exchange={} routingKey={}", caseId, exchange, routingKey);
+                rabbitTemplate.convertAndSend(exchange, routingKey, new KycCaseProcessingEvent(caseId, requestId));
+                log.info("kyc workflow event published requestId={} caseId={} mode=async exchange={} routingKey={}", requestId, caseId, exchange, routingKey);
                 return;
             } catch (Exception exception) {
-                log.warn("kyc workflow async publish failed caseId={} fallback=inline errorType={} errorMessage={}",
+                log.warn("kyc workflow async publish failed requestId={} caseId={} fallback=inline errorType={} errorMessage={}",
+                        requestId,
                         caseId,
                         exception.getClass().getName(),
                         exception.getMessage());
             }
         }
-        log.info("kyc workflow processing inline caseId={}", caseId);
+        log.info("kyc workflow processing inline requestId={} caseId={}", requestId, caseId);
         kycFlowService.process(caseId);
     }
 }

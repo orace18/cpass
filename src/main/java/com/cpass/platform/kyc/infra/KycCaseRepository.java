@@ -22,4 +22,6 @@ public interface KycCaseRepository extends JpaRepository<KycCaseEntity, UUID> {
     List<KycCaseEntity> findAllByOrderByCreatedAtDesc();
 
     List<KycCaseEntity> findByClientIdOrderByCreatedAtDesc(UUID clientId);
+
+    long countByStatus(KycCaseStatus status);
 }

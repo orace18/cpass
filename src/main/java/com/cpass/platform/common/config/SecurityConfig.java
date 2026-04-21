@@ -5,6 +5,7 @@ import com.cpass.platform.common.security.ApiAuthenticationFilter;
 import com.cpass.platform.common.security.ClientJwtAuthenticationFilter;
 import com.cpass.platform.common.security.RequestCorrelation;
 import com.cpass.platform.common.security.RequestCorrelationFilter;
+import com.cpass.platform.common.security.SecurityMetricsService;
 import com.cpass.platform.common.security.UserJwtAuthenticationFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -37,7 +38,8 @@ public class SecurityConfig {
                                                    ClientJwtAuthenticationFilter clientJwtAuthenticationFilter,
                                                    ApiAuthenticationFilter apiAuthenticationFilter,
                                                    RequestCorrelationFilter requestCorrelationFilter,
-                                                   AuditLogFilter auditLogFilter) throws Exception {
+                                                   AuditLogFilter auditLogFilter,
+                                                   SecurityMetricsService securityMetricsService) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
@@ -57,12 +59,14 @@ public class SecurityConfig {
                 )
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, exception) -> {
+                            securityMetricsService.recordAuthFailure("spring-security", "AUTH_REQUIRED", request.getServletPath());
                             response.setStatus(401);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.getWriter().write("{\"code\":\"AUTH_REQUIRED\",\"message\":\"Authentication is required\",\"requestId\":\""
                                     + RequestCorrelation.requestId() + "\"}");
                         })
                         .accessDeniedHandler((request, response, exception) -> {
+                            securityMetricsService.recordAuthFailure("spring-security", "ACCESS_DENIED", request.getServletPath());
                             response.setStatus(403);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.getWriter().write("{\"code\":\"ACCESS_DENIED\",\"message\":\"Access denied\",\"requestId\":\""

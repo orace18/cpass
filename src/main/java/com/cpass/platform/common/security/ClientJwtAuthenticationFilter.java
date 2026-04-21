@@ -25,13 +25,16 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtService jwtService;
     private final ClientRepository clientRepository;
     private final ClientRateLimiter clientRateLimiter;
+    private final SecurityMetricsService securityMetricsService;
 
     public ClientJwtAuthenticationFilter(JwtService jwtService,
                                          ClientRepository clientRepository,
-                                         ClientRateLimiter clientRateLimiter) {
+                                         ClientRateLimiter clientRateLimiter,
+                                         SecurityMetricsService securityMetricsService) {
         this.jwtService = jwtService;
         this.clientRepository = clientRepository;
         this.clientRateLimiter = clientRateLimiter;
+        this.securityMetricsService = securityMetricsService;
     }
 
     @Override
@@ -96,6 +99,7 @@ public class ClientJwtAuthenticationFilter extends OncePerRequestFilter {
                 SecurityContextHolder.clearContext();
             }
         } catch (ApiException exception) {
+            securityMetricsService.recordAuthFailure("bearer", exception.getCode(), request.getServletPath());
             response.setStatus(exception.getStatus().value());
             response.setContentType("application/json");
             response.getWriter().write("{\"code\":\"" + exception.getCode()

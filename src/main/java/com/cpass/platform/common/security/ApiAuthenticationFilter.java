@@ -34,6 +34,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
     private final NonceStoreService nonceStoreService;
     private final ClientRateLimiter rateLimiter;
     private final HmacSecurityProperties properties;
+    private final SecurityMetricsService securityMetricsService;
     private final ObjectMapper objectMapper;
 
     public ApiAuthenticationFilter(ApiKeyRepository apiKeyRepository,
@@ -41,12 +42,14 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                                    NonceStoreService nonceStoreService,
                                    ClientRateLimiter rateLimiter,
                                    HmacSecurityProperties properties,
+                                   SecurityMetricsService securityMetricsService,
                                    ObjectMapper objectMapper) {
         this.apiKeyRepository = apiKeyRepository;
         this.secretCryptoService = secretCryptoService;
         this.nonceStoreService = nonceStoreService;
         this.rateLimiter = rateLimiter;
         this.properties = properties;
+        this.securityMetricsService = securityMetricsService;
         this.objectMapper = objectMapper;
     }
 
@@ -81,7 +84,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
             String signatureHeader = request.getHeader(HEADER_SIGNATURE);
 
             if (isBlank(apiKeyHeader) || isBlank(timestampHeader) || isBlank(nonceHeader) || isBlank(signatureHeader)) {
-                reject(response, HttpStatus.UNAUTHORIZED, "AUTH_HEADERS_REQUIRED", "Missing authentication headers");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "AUTH_HEADERS_REQUIRED", "Missing authentication headers");
                 return;
             }
 
@@ -89,18 +92,18 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
             try {
                 timestamp = Long.parseLong(timestampHeader);
             } catch (NumberFormatException exception) {
-                reject(response, HttpStatus.UNAUTHORIZED, "INVALID_TIMESTAMP", "Timestamp must be epoch seconds");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "INVALID_TIMESTAMP", "Timestamp must be epoch seconds");
                 return;
             }
 
             if (!isTimestampWithinSkew(timestamp)) {
-                reject(response, HttpStatus.UNAUTHORIZED, "TIMESTAMP_EXPIRED", "Timestamp outside allowed skew");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "TIMESTAMP_EXPIRED", "Timestamp outside allowed skew");
                 return;
             }
 
             Optional<ApiKeyEntity> apiKeyOptional = apiKeyRepository.findByApiKeyAndActiveTrue(apiKeyHeader);
             if (apiKeyOptional.isEmpty()) {
-                reject(response, HttpStatus.UNAUTHORIZED, "INVALID_API_KEY", "API key not found");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "INVALID_API_KEY", "API key not found");
                 return;
             }
 
@@ -110,17 +113,17 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
             String payload = buildSigningPayload(request, timestampHeader, nonceHeader, bodyBytes);
             String expected = HmacSigner.hmacSha256Hex(clientSecret, payload);
             if (!HmacSigner.constantTimeEquals(expected, signatureHeader)) {
-                reject(response, HttpStatus.UNAUTHORIZED, "INVALID_SIGNATURE", "Signature mismatch");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "INVALID_SIGNATURE", "Signature mismatch");
                 return;
             }
 
             if (!nonceStoreService.registerNonce(apiKeyHeader, nonceHeader, properties.nonceTtlSeconds())) {
-                reject(response, HttpStatus.UNAUTHORIZED, "NONCE_REPLAYED", "Nonce already used");
+                reject(request, response, HttpStatus.UNAUTHORIZED, "NONCE_REPLAYED", "Nonce already used");
                 return;
             }
 
             if (!rateLimiter.isAllowed(apiKey.getClient().getId(), apiKey.getClient().getRateLimitPerMinute())) {
-                reject(response, HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", "Rate limit exceeded");
+                reject(request, response, HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED", "Rate limit exceeded");
                 return;
             }
 
@@ -148,7 +151,7 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
                 SecurityContextHolder.clearContext();
             }
         } catch (Exception exception) {
-            reject(response, HttpStatus.UNAUTHORIZED, "AUTH_VALIDATION_FAILED", exception.getMessage());
+            reject(request, response, HttpStatus.UNAUTHORIZED, "AUTH_VALIDATION_FAILED", "Authentication validation failed");
         }
     }
 
@@ -170,7 +173,12 @@ public class ApiAuthenticationFilter extends OncePerRequestFilter {
         return Math.abs(now - timestampSeconds) <= properties.allowedSkewSeconds();
     }
 
-    private void reject(HttpServletResponse response, HttpStatus status, String code, String message) throws IOException {
+    private void reject(HttpServletRequest request,
+                        HttpServletResponse response,
+                        HttpStatus status,
+                        String code,
+                        String message) throws IOException {
+        securityMetricsService.recordAuthFailure("api-key", code, request.getServletPath());
         ErrorResponse errorResponse = new ErrorResponse(
                 Instant.now(),
                 status.value(),

@@ -4,6 +4,7 @@ import com.cpass.platform.client.domain.ClientEntity;
 import com.cpass.platform.client.domain.ClientScope;
 import com.cpass.platform.client.infra.ClientRepository;
 import com.cpass.platform.common.security.JwtService;
+import com.cpass.platform.common.security.UserJwtService;
 import com.cpass.platform.kyc.domain.IdentityEntity;
 import com.cpass.platform.kyc.domain.KycCaseEntity;
 import com.cpass.platform.kyc.domain.KycCaseStatus;
@@ -20,6 +21,9 @@ import com.cpass.platform.kyc.infra.IdentityKycRepository;
 import com.cpass.platform.kyc.infra.IdentityRepository;
 import com.cpass.platform.kyc.infra.KycCaseRepository;
 import com.cpass.platform.kyc.infra.KycDocumentRepository;
+import com.cpass.platform.user.domain.UserEntity;
+import com.cpass.platform.user.domain.UserRole;
+import com.cpass.platform.user.infra.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,6 +72,12 @@ class KycServiceUploadIntegrationTest {
     private JwtService jwtService;
 
     @Autowired
+    private UserJwtService userJwtService;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
     private MockMvc mockMvc;
 
     @Autowired
@@ -92,6 +102,7 @@ class KycServiceUploadIntegrationTest {
         kycCaseRepository.deleteAll();
         identityRepository.deleteAll();
         clientRepository.deleteAll();
+        userRepository.deleteAll();
 
         reset(s3Client);
         when(s3Client.putObject(any(PutObjectRequest.class), any(RequestBody.class)))
@@ -685,6 +696,48 @@ class KycServiceUploadIntegrationTest {
                 .andExpect(jsonPath("$.requestId").value("req-unsupported-doc-type"));
     }
 
+    @Test
+    void shouldExposeKycOperationalStatsForPilotMonitoring() throws Exception {
+        UUID clientId = createClient();
+        UUID unreadableCaseId = createCase(clientId);
+        kycService.upload(
+                clientId,
+                unreadableCaseId,
+                KycDocumentType.PASSPORT,
+                file("unreadable-passport.jpg"),
+                "{\"accountHolderId\":\"acc_1\"}"
+        );
+
+        UUID approvedCaseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\",\"faceHash\":\"face-a\"}",
+                "P1234567",
+                "face-a"
+        );
+        kycService.upload(
+                clientId,
+                approvedCaseId,
+                KycDocumentType.PASSPORT,
+                file("passport.png"),
+                "{\"documentType\":\"PASSPORT\",\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+        uploadStrongSelfie(clientId, approvedCaseId, 92);
+
+        mockMvc.perform(get("/admin/kyc/stats")
+                        .header("Authorization", "Bearer " + createAdminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalCases").value(2))
+                .andExpect(jsonPath("$.verified.count").value(1))
+                .andExpect(jsonPath("$.verified.rate").value(50.0))
+                .andExpect(jsonPath("$.resubmission.count").value(1))
+                .andExpect(jsonPath("$.resubmission.rate").value(50.0))
+                .andExpect(jsonPath("$.topReasonCodes[0].key").value(KycReasonCode.DOCUMENT_UNREADABLE.name()))
+                .andExpect(jsonPath("$.friction.topUnreadableCauses[0].key").value(KycReasonCode.DOCUMENT_UNREADABLE.name()))
+                .andExpect(jsonPath("$.friction.leastPerformingDocumentTypes[0].documentType").value(KycDocumentType.PASSPORT.name()))
+                .andExpect(jsonPath("$.authFailures.total").hasJsonPath())
+                .andExpect(jsonPath("$.dataDrivenV2Priorities").isArray());
+    }
+
     private UUID createClient() {
         ClientEntity client = new ClientEntity();
         client.setName("kyc-test-" + UUID.randomUUID());
@@ -699,6 +752,17 @@ class KycServiceUploadIntegrationTest {
         client.setKycLevelRequired(KycLevel.LEVEL_1);
         client.setScopes(Set.of(ClientScope.KYC_READ, ClientScope.KYC_WRITE));
         return clientRepository.saveAndFlush(client).getId();
+    }
+
+    private String createAdminToken() {
+        UserEntity admin = new UserEntity();
+        admin.setEmail("admin-" + UUID.randomUUID() + "@test.local");
+        admin.setTwoFactorEmail(admin.getEmail());
+        admin.setPasswordHash("hash");
+        admin.setRole(UserRole.ADMIN);
+        admin.setEnabled(true);
+        UserEntity saved = userRepository.saveAndFlush(admin);
+        return userJwtService.issueToken(saved).token();
     }
 
     private UUID createCase(UUID clientId) {

@@ -68,6 +68,7 @@ public class KycService {
     private final KycWorkflowPublisher workflowPublisher;
     private final KycFlowService kycFlowService;
     private final KycFlowProperties kycFlowProperties;
+    private final KycOperationalMetricsService metricsService;
     private final String s3Endpoint;
     private final String bucketName;
 
@@ -82,6 +83,7 @@ public class KycService {
                       KycWorkflowPublisher workflowPublisher,
                       KycFlowService kycFlowService,
                       KycFlowProperties kycFlowProperties,
+                      KycOperationalMetricsService metricsService,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.endpoint}") String s3Endpoint,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.bucket}") String bucketName) {
         this.s3Client = s3Client;
@@ -95,6 +97,7 @@ public class KycService {
         this.workflowPublisher = workflowPublisher;
         this.kycFlowService = kycFlowService;
         this.kycFlowProperties = kycFlowProperties;
+        this.metricsService = metricsService;
         this.s3Endpoint = s3Endpoint;
         this.bucketName = bucketName;
     }
@@ -112,6 +115,14 @@ public class KycService {
         ReuseDecision reuseDecision = evaluateReuse(identity, requiredLevel);
         KycCaseEntity kycCase = createCase(clientId, identity, request.userId(), requiredLevel, reuseDecision, request);
         identityKycRepository.save(createMapping(identity, kycCase));
+        log.info("kyc case initialized requestId={} clientId={} caseId={} userId={} level={} reuseStatus={} status={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                kycCase.getId(),
+                request.userId(),
+                requiredLevel,
+                reuseDecision.status(),
+                kycCase.getStatus());
 
         if (reuseDecision.status() == KycReuseStatus.REUSED) {
             return new KycCheckOrInitResponse(reuseDecision.status(), requiredLevel, kycCase.getId(), kycCase.getReferenceId());
@@ -159,7 +170,8 @@ public class KycService {
             String resolvedFileName = resolveFileName(file, documentType);
             String mimeType = resolveContentType(file);
 
-            log.info("kyc upload service start clientId={} caseId={} documentType={} mappedProviderType={} fileBytes={} fileName={} originalFileName={} mimeType={} metadata={}",
+            log.info("kyc upload service start requestId={} clientId={} caseId={} documentType={} mappedProviderType={} fileBytes={} fileName={} originalFileName={} mimeType={} metadataSummary={}",
+                    RequestCorrelation.requestId(),
                     clientId,
                     caseId,
                     documentType,
@@ -168,7 +180,7 @@ public class KycService {
                     resolvedFileName,
                     originalFileName,
                     mimeType,
-                    metadataJson);
+                    metadataSummary(metadataJson));
 
             if (originalFileName == null || originalFileName.isBlank()) {
                 log.warn("kyc upload missing multipart filename caseId={} documentType={} generatedFileName={}",
@@ -286,15 +298,26 @@ public class KycService {
                 caseMetadata.put("selfieDocumentId", saved.getId().toString());
                 caseMetadata.putAll(selfieAnalysis.biometricSignals());
             }
+            caseMetadata.put("lastRequestId", RequestCorrelation.requestId());
             kycCase.setMetadataJson(kycFlowService.writeMetadata(caseMetadata));
             kycCaseRepository.save(kycCase);
 
             KycDocumentEntity actionableDocument = applyImmediateResubmissionDecision(kycCase, saved);
             workflowPublisher.publish(kycCase.getId());
-            log.info("kyc upload completed caseId={} documentId={} workflowTriggered=true", caseId, saved.getId());
-            return toUploadResponse(kycCase, actionableDocument);
+            KycUploadResponse response = toUploadResponse(kycCase, actionableDocument);
+            log.info("kyc upload completed requestId={} clientId={} caseId={} documentId={} caseStatus={} productStatus={} reasonCode={} nextAction={} workflowTriggered=true",
+                    RequestCorrelation.requestId(),
+                    clientId,
+                    caseId,
+                    saved.getId(),
+                    response.caseStatus(),
+                    response.productStatus(),
+                    response.reasonCode(),
+                    response.nextAction());
+            return response;
         } catch (Exception exception) {
-            log.error("kyc upload failed clientId={} caseId={} documentType={} mappedProviderType={} originalFileName={} contentType={} fileSize={} metadata={} failureType={} failureMessage={}",
+            log.error("kyc upload failed requestId={} clientId={} caseId={} documentType={} mappedProviderType={} originalFileName={} contentType={} fileSize={} metadataSummary={} failureType={} failureMessage={}",
+                    RequestCorrelation.requestId(),
                     clientId,
                     caseId,
                     documentType,
@@ -302,7 +325,7 @@ public class KycService {
                     originalFileName,
                     incomingContentType,
                     incomingFileSize,
-                    metadataJson,
+                    metadataSummary(metadataJson),
                     exception.getClass().getName(),
                     exception.getMessage(),
                     exception);
@@ -391,7 +414,18 @@ public class KycService {
             document.setReviewedAt(Instant.now());
             kycDocumentRepository.save(document);
         });
-        return toResponse(kycCase);
+        KycDocumentEntity primaryDocument = latestIdentityDocument(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).orElse(null);
+        metricsService.recordCaseDecision(kycCase, primaryDocument);
+        KycCaseResponse response = toResponse(kycCase);
+        log.info("kyc admin review decision requestId={} clientId={} caseId={} caseStatus={} productStatus={} reasonCode={} nextAction={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                response.caseStatus(),
+                response.productStatus(),
+                response.reasonCode(),
+                response.nextAction());
+        return response;
     }
 
     @Transactional(readOnly = true)
@@ -419,6 +453,16 @@ public class KycService {
         metadata.putIfAbsent("phoneNumber", kycCase.getIdentity().getPhoneNumber());
         metadata.putIfAbsent("documentNumber", kycCase.getIdentity().getDocumentNumber());
         return metadata;
+    }
+
+    private Map<String, Object> metadataSummary(String metadataJson) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("present", metadataJson != null && !metadataJson.isBlank());
+        summary.put("length", metadataJson == null ? 0 : metadataJson.length());
+        if (metadataJson != null && !metadataJson.isBlank()) {
+            summary.put("keys", documentAnalysisService.parse(metadataJson).keySet());
+        }
+        return summary;
     }
 
     private String enrichedDocumentMetadata(String metadataJson, DocumentAnalysisService.DocumentAnalysisResult analysis) {
@@ -528,6 +572,7 @@ public class KycService {
         metadata.put("documentNumber", request.documentNumber());
         metadata.put("faceHash", request.faceHash());
         metadata.put("contactVerified", Boolean.TRUE.equals(request.contactVerified()));
+        metadata.put("lastRequestId", RequestCorrelation.requestId());
 
         if (reuseDecision.status() == KycReuseStatus.REUSED && reuseDecision.sourceCase() != null) {
             KycCaseEntity source = reuseDecision.sourceCase();

@@ -176,7 +176,7 @@ public class KycController {
                                   KycDocumentType documentType,
                                   MultipartFile file,
                                   String metadata) {
-        log.info("kyc upload request requestId={} route={} caseId={} documentType={} contentType={} fileSize={} originalFilename={} metadata={}",
+        log.info("kyc upload request requestId={} route={} caseId={} documentType={} contentType={} fileSize={} originalFilename={} metadataSummary={}",
                 RequestCorrelation.requestId(),
                 route,
                 caseId,
@@ -184,6 +184,13 @@ public class KycController {
                 file.getContentType(),
                 file.getSize(),
                 file.getOriginalFilename(),
-                metadata);
+                metadataSummary(metadata));
+    }
+
+    private String metadataSummary(String metadata) {
+        if (metadata == null || metadata.isBlank()) {
+            return "present=false,length=0";
+        }
+        return "present=true,length=" + metadata.length();
     }
 }

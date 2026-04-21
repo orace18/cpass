@@ -5,6 +5,8 @@ import com.cpass.platform.kyc.domain.KycCaseEntity;
 import com.cpass.platform.kyc.domain.KycCaseStatus;
 import com.cpass.platform.kyc.domain.KycDocumentEntity;
 import com.cpass.platform.kyc.dto.AdminKycReviewRequest;
+import com.cpass.platform.kyc.dto.KycOperationalMetricsResponse;
+import com.cpass.platform.kyc.service.KycOperationalMetricsService;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
 import org.springframework.http.ContentDisposition;
@@ -31,12 +33,20 @@ import java.util.UUID;
 public class AdminKycController {
 
     private final KycService kycService;
+    private final KycOperationalMetricsService metricsService;
     private final ClientRepository clientRepository;
 
     public AdminKycController(KycService kycService,
+                              KycOperationalMetricsService metricsService,
                               ClientRepository clientRepository) {
         this.kycService = kycService;
+        this.metricsService = metricsService;
         this.clientRepository = clientRepository;
+    }
+
+    @GetMapping("/stats")
+    public KycOperationalMetricsResponse stats() {
+        return metricsService.snapshot();
     }
 
     @GetMapping

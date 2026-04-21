@@ -1,5 +1,6 @@
 package com.cpass.platform.kyc.service;
 
+import com.cpass.platform.common.security.RequestCorrelation;
 import com.cpass.platform.kyc.domain.IdentityEntity;
 import com.cpass.platform.kyc.domain.IdentityKycEntity;
 import com.cpass.platform.kyc.domain.KycCaseEntity;
@@ -8,6 +9,7 @@ import com.cpass.platform.kyc.domain.KycDocumentEntity;
 import com.cpass.platform.kyc.domain.KycDocumentStatus;
 import com.cpass.platform.kyc.domain.KycDocumentType;
 import com.cpass.platform.kyc.domain.KycDocumentValidityStatus;
+import com.cpass.platform.kyc.domain.KycReasonCode;
 import com.cpass.platform.kyc.domain.KycStepType;
 import com.cpass.platform.kyc.infra.IdentityKycRepository;
 import com.cpass.platform.kyc.infra.IdentityRepository;
@@ -61,6 +63,7 @@ public class KycFlowService {
     private final ProviderConfigRepository providerConfigRepository;
     private final Map<String, KycProviderAdapter> providersByCode;
     private final KycFlowProperties properties;
+    private final KycOperationalMetricsService metricsService;
     private final ObjectMapper objectMapper;
 
     public KycFlowService(KycCaseRepository kycCaseRepository,
@@ -72,6 +75,7 @@ public class KycFlowService {
                           ProviderConfigRepository providerConfigRepository,
                           List<KycProviderAdapter> providers,
                           KycFlowProperties properties,
+                          KycOperationalMetricsService metricsService,
                           ObjectMapper objectMapper) {
         this.kycCaseRepository = kycCaseRepository;
         this.kycDocumentRepository = kycDocumentRepository;
@@ -82,6 +86,7 @@ public class KycFlowService {
         this.providerConfigRepository = providerConfigRepository;
         this.providersByCode = providers.stream().collect(Collectors.toMap(KycProviderAdapter::providerCode, Function.identity()));
         this.properties = properties;
+        this.metricsService = metricsService;
         this.objectMapper = objectMapper;
     }
 
@@ -252,14 +257,27 @@ public class KycFlowService {
         }
         kycCaseRepository.save(kycCase);
         syncMapping(kycCase);
-        log.info("kyc workflow decision caseId={} status={} score={} reason={} documentId={} documentStatus={} validityStatus={}",
+        KycReasonCode reasonCode = metricsService.reasonCode(kycCase, primaryDocument);
+        metricsService.recordCaseDecision(kycCase, primaryDocument);
+        log.info("kyc workflow decision requestId={} clientId={} caseId={} status={} productStatus={} score={} reasonCode={} reason={} documentId={} documentStatus={} validityStatus={} processingMillis={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
                 kycCase.getId(),
                 status,
+                productStatus(status),
                 score,
+                reasonCode,
                 reason,
                 primaryDocument == null ? null : primaryDocument.getId(),
                 primaryDocument == null ? null : primaryDocument.getStatus(),
-                primaryDocument == null ? null : primaryDocument.getValidityStatus());
+                primaryDocument == null ? null : primaryDocument.getValidityStatus(),
+                kycCase.getCreatedAt() == null || kycCase.getLastProcessedAt() == null
+                        ? null
+                        : java.time.Duration.between(kycCase.getCreatedAt(), kycCase.getLastProcessedAt()).toMillis());
+    }
+
+    private String productStatus(KycCaseStatus status) {
+        return status == KycCaseStatus.APPROVED ? "VERIFIED" : status.name();
     }
 
     private void syncIdentity(KycDocumentEntity primaryDocument, IdentityEntity identity, Map<String, Object> metadata) {
