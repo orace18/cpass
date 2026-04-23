@@ -136,6 +136,19 @@ public class KycService {
     public KycCaseResponse getCase(UUID clientId, UUID caseId) {
         KycCaseEntity kycCase = kycCaseRepository.findByIdAndClientId(caseId, clientId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "KYC_CASE_NOT_FOUND", "KYC case not found"));
+
+        if (kycCase.getStatus() == KycCaseStatus.INITIATED) {
+            List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+            if (!documents.isEmpty()) {
+                boolean hasIdentity = documents.stream().anyMatch(this::isIdentityDocument);
+                boolean hasSelfie = documents.stream().anyMatch(d -> d.getDocumentType() == KycDocumentType.SELFIE);
+                log.info("kyc workflow diagnostic caseId={} status={} documentCount={} hasIdentity={} hasSelfie={} metadata={}",
+                        caseId, kycCase.getStatus(), documents.size(), hasIdentity, hasSelfie, kycCase.getMetadataJson());
+                log.info("kyc workflow auto-recovery triggered caseId={} documentsFound={}", caseId, documents.size());
+                workflowPublisher.publish(caseId);
+            }
+        }
+
         return toResponse(kycCase);
     }
 

@@ -33,12 +33,12 @@ public class KycVerifyMvpTest {
         UUID clientId = UUID.randomUUID();
         KycCheckOrInitRequest initReq = new KycCheckOrInitRequest(
                 "user-123",
-                KycLevel.LEVEL_1,
-                "123456789",
-                "+33600000000",
                 "John Doe",
-                "1990-01-01",
+                LocalDate.of(1990, 1, 1),
+                "+33600000000",
+                "123456789",
                 "hash123",
+                KycLevel.LEVEL_1,
                 true
         );
 
