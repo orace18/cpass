@@ -144,13 +144,6 @@ public class KycService {
     }
 
     private KycCaseEntity recoverInitiatedCase(UUID clientId, UUID caseId, KycCaseEntity kycCase) {
-        List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
-        boolean hasIdentity = documents.stream().anyMatch(this::isIdentityDocument);
-        boolean hasSelfie = documents.stream().anyMatch(d -> d.getDocumentType() == KycDocumentType.SELFIE);
-        List<String> documentTypes = documents.stream()
-                .map(document -> document.getId() + ":" + document.getDocumentType() + ":" + document.getStatus() + ":" + document.getValidityStatus())
-                .toList();
-
         log.info("kyc recovery case loaded requestId={} clientId={} caseId={} status={} level={} createdAt={} updatedAt={} metadataPresent={} metadataLength={}",
                 RequestCorrelation.requestId(),
                 clientId,
@@ -161,6 +154,14 @@ public class KycService {
                 kycCase.getUpdatedAt(),
                 kycCase.getMetadataJson() != null && !kycCase.getMetadataJson().isBlank(),
                 kycCase.getMetadataJson() == null ? 0 : kycCase.getMetadataJson().length());
+
+        List<KycDocumentEntity> documents = recoverDocumentLinksIfPossible(clientId, caseId, kycCase);
+        boolean hasIdentity = documents.stream().anyMatch(this::isIdentityDocument);
+        boolean hasSelfie = documents.stream().anyMatch(d -> d.getDocumentType() == KycDocumentType.SELFIE);
+        List<String> documentTypes = documents.stream()
+                .map(document -> document.getId() + ":" + document.getDocumentType() + ":" + document.getStatus() + ":" + document.getValidityStatus())
+                .toList();
+
         log.info("kyc recovery docs found requestId={} clientId={} caseId={} count={} hasIdentity={} hasSelfie={} documents={}",
                 RequestCorrelation.requestId(),
                 clientId,
@@ -192,6 +193,46 @@ public class KycService {
                 refreshed.getScore(),
                 refreshed.getStatusReason());
         return refreshed;
+    }
+
+    private List<KycDocumentEntity> recoverDocumentLinksIfPossible(UUID clientId, UUID caseId, KycCaseEntity kycCase) {
+        List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+        if (!documents.isEmpty()) {
+            return documents;
+        }
+
+        Instant createdAt = kycCase.getCreatedAt() == null ? Instant.now() : kycCase.getCreatedAt();
+        Instant from = createdAt.minusSeconds(900);
+        Instant to = Instant.now().plusSeconds(60);
+        List<KycDocumentEntity> orphanWindowDocuments = kycDocumentRepository
+                .findByClientIdAndKycCaseIsNullAndCreatedAtBetweenOrderByCreatedAtAsc(clientId, from, to);
+        List<KycDocumentEntity> referenceDocuments = kycCase.getReferenceId() == null || kycCase.getReferenceId().isBlank()
+                ? List.of()
+                : kycDocumentRepository.findByClientIdAndObjectKeyContainingOrderByCreatedAtAsc(clientId, "/" + kycCase.getReferenceId() + "/");
+        List<KycDocumentEntity> recoverableOrphans = kycCase.getReferenceId() == null || kycCase.getReferenceId().isBlank()
+                ? List.of()
+                : kycDocumentRepository.findByClientIdAndKycCaseIsNullAndObjectKeyContainingOrderByCreatedAtAsc(clientId, "/" + kycCase.getReferenceId() + "/");
+
+        if (!recoverableOrphans.isEmpty()) {
+            recoverableOrphans.forEach(document -> document.setKycCase(kycCase));
+            kycDocumentRepository.saveAll(recoverableOrphans);
+            kycDocumentRepository.flush();
+        }
+
+        log.info("kyc recovery linkage diagnostic requestId={} clientId={} caseId={} referenceId={} linkedCountBefore=0 orphanWindowCount={} referenceObjectCount={} attachedCount={} orphanWindowDocuments={} referenceDocuments={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                caseId,
+                kycCase.getReferenceId(),
+                orphanWindowDocuments.size(),
+                referenceDocuments.size(),
+                recoverableOrphans.size(),
+                documentDiagnostics(orphanWindowDocuments),
+                documentDiagnostics(referenceDocuments));
+
+        return recoverableOrphans.isEmpty()
+                ? documents
+                : kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
     }
 
     @Transactional
@@ -791,6 +832,19 @@ public class KycService {
     private boolean isIdentityDocument(KycDocumentEntity document) {
         return document.getDocumentType() != KycDocumentType.SELFIE
                 && document.getDocumentType() != KycDocumentType.FIELD_AGENT_PHOTO;
+    }
+
+    private List<String> documentDiagnostics(List<KycDocumentEntity> documents) {
+        return documents.stream()
+                .limit(20)
+                .map(document -> document.getId()
+                        + ":case=" + (document.getKycCase() == null ? null : document.getKycCase().getId())
+                        + ":type=" + document.getDocumentType()
+                        + ":status=" + document.getStatus()
+                        + ":validity=" + document.getValidityStatus()
+                        + ":createdAt=" + document.getCreatedAt()
+                        + ":objectKey=" + document.getObjectKey())
+                .toList();
     }
 
     @SuppressWarnings("unchecked")

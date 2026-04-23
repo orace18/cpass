@@ -110,6 +110,54 @@ class KycServiceUploadIntegrationTest {
     }
 
     @Test
+    void shouldAttachIdentityDocumentToCaseOnUpload() throws Exception {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\"}",
+                "P1234567",
+                null
+        );
+
+        KycUploadResponse response = kycService.upload(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                file("passport.jpg"),
+                "{\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+
+        KycDocumentEntity document = kycDocumentRepository.findById(response.documentId()).orElseThrow();
+        KycCaseEntity kycCase = kycCaseRepository.findById(caseId).orElseThrow();
+        List<KycDocumentEntity> linkedDocuments = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+
+        assertThat(document.getKycCase()).isNotNull();
+        assertThat(document.getKycCase().getId()).isEqualTo(caseId);
+        assertThat(document.getObjectKey()).contains(kycCase.getReferenceId());
+        assertThat(linkedDocuments).extracting(KycDocumentEntity::getId).contains(response.documentId());
+        assertThat(kycCase.getMetadataJson()).contains("\"identityDocumentId\":\"" + response.documentId() + "\"");
+    }
+
+    @Test
+    void shouldAttachSelfieDocumentToCaseOnUpload() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(clientId);
+
+        KycUploadResponse response = uploadStrongSelfie(clientId, caseId, 91);
+
+        KycDocumentEntity document = kycDocumentRepository.findById(response.documentId()).orElseThrow();
+        KycCaseEntity kycCase = kycCaseRepository.findById(caseId).orElseThrow();
+        List<KycDocumentEntity> linkedDocuments = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+
+        assertThat(document.getDocumentType()).isEqualTo(KycDocumentType.SELFIE);
+        assertThat(document.getKycCase()).isNotNull();
+        assertThat(document.getKycCase().getId()).isEqualTo(caseId);
+        assertThat(document.getObjectKey()).contains(kycCase.getReferenceId());
+        assertThat(linkedDocuments).extracting(KycDocumentEntity::getId).contains(response.documentId());
+        assertThat(kycCase.getMetadataJson()).contains("\"selfieDocumentId\":\"" + response.documentId() + "\"");
+    }
+
+    @Test
     void shouldRequestResubmissionWhenIdentityDocumentIsUnreadable() throws Exception {
         UUID clientId = createClient();
         UUID caseId = createCase(clientId);
@@ -232,6 +280,46 @@ class KycServiceUploadIntegrationTest {
         assertThat(status.productStatus()).isEqualTo("VERIFIED");
         assertThat(status.reasonCode()).isNull();
         assertThat(status.nextAction()).isNull();
+        assertThat(documents).allMatch(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID);
+        assertBiometricSignals(status, "MATCH", 92);
+    }
+
+    @Test
+    void shouldRecoverReferenceKeyedOrphanDocumentsAndReturnApprovedStatus() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\",\"faceHash\":\"face-a\"}",
+                "P1234567",
+                "face-a"
+        );
+        KycCaseEntity kycCase = kycCaseRepository.findById(caseId).orElseThrow();
+
+        KycDocumentEntity identityDocument = persistOrphanDocumentWithReferenceObjectKey(
+                clientId,
+                kycCase,
+                KycDocumentType.PASSPORT,
+                "{\"documentType\":\"PASSPORT\",\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+        KycDocumentEntity selfieDocument = persistOrphanDocumentWithReferenceObjectKey(
+                clientId,
+                kycCase,
+                KycDocumentType.SELFIE,
+                "{\"faceDetectedOnSelfie\":true,\"selfieQuality\":90,\"faceDetectedOnDocument\":true,\"faceMatchScore\":92}"
+        );
+
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).isEmpty();
+
+        KycCaseResponse status = kycService.getCase(clientId, caseId);
+        List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(
+                kycCaseRepository.findById(caseId).orElseThrow()
+        );
+
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.APPROVED);
+        assertThat(status.productStatus()).isEqualTo("VERIFIED");
+        assertThat(documents).extracting(KycDocumentEntity::getId)
+                .containsExactly(identityDocument.getId(), selfieDocument.getId());
+        assertThat(documents).allMatch(document -> document.getKycCase() != null && document.getKycCase().getId().equals(caseId));
         assertThat(documents).allMatch(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID);
         assertBiometricSignals(status, "MATCH", 92);
     }
@@ -926,6 +1014,23 @@ class KycServiceUploadIntegrationTest {
         document.setDocumentType(documentType);
         document.setFileName(documentType.name().toLowerCase() + ".jpg");
         document.setObjectKey(clientId + "/" + caseId + "/" + document.getFileName());
+        document.setBucketName("cpass-kyc");
+        document.setContentType("image/jpeg");
+        document.setSizeBytes(3);
+        document.setStatus(KycDocumentStatus.PENDING);
+        document.setMetadataJson(metadataJson);
+        return kycDocumentRepository.saveAndFlush(document);
+    }
+
+    private KycDocumentEntity persistOrphanDocumentWithReferenceObjectKey(UUID clientId,
+                                                                          KycCaseEntity kycCase,
+                                                                          KycDocumentType documentType,
+                                                                          String metadataJson) {
+        KycDocumentEntity document = new KycDocumentEntity();
+        document.setClientId(clientId);
+        document.setDocumentType(documentType);
+        document.setFileName(documentType.name().toLowerCase() + ".jpg");
+        document.setObjectKey(clientId + "/" + kycCase.getReferenceId() + "/" + document.getFileName());
         document.setBucketName("cpass-kyc");
         document.setContentType("image/jpeg");
         document.setSizeBytes(3);
