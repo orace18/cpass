@@ -199,6 +199,109 @@ class KycServiceUploadIntegrationTest {
     }
 
     @Test
+    void shouldRecoverCompleteInitiatedCaseAndReturnApprovedStatus() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\",\"faceHash\":\"face-a\"}",
+                "P1234567",
+                "face-a"
+        );
+
+        persistDocument(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                "{\"documentType\":\"PASSPORT\",\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+        persistDocument(
+                clientId,
+                caseId,
+                KycDocumentType.SELFIE,
+                "{\"faceDetectedOnSelfie\":true,\"selfieQuality\":90,\"faceDetectedOnDocument\":true,\"faceMatchScore\":92}"
+        );
+
+        assertThat(kycCaseRepository.findById(caseId).orElseThrow().getStatus()).isEqualTo(KycCaseStatus.INITIATED);
+
+        KycCaseResponse status = kycService.getCase(clientId, caseId);
+        List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(
+                kycCaseRepository.findById(caseId).orElseThrow()
+        );
+
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.APPROVED);
+        assertThat(status.productStatus()).isEqualTo("VERIFIED");
+        assertThat(status.reasonCode()).isNull();
+        assertThat(status.nextAction()).isNull();
+        assertThat(documents).allMatch(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID);
+        assertBiometricSignals(status, "MATCH", 92);
+    }
+
+    @Test
+    void shouldRecoverUnreadableDocumentIntoResubmissionRequired() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(clientId, "{\"contactVerified\":true}", null, null);
+        persistDocument(clientId, caseId, KycDocumentType.PASSPORT, "{}");
+
+        KycCaseResponse status = kycService.getCase(clientId, caseId);
+
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.RESUBMISSION_REQUIRED);
+        assertThat(status.reasonCode()).isEqualTo(KycReasonCode.DOCUMENT_UNREADABLE);
+        assertThat(status.nextAction()).isEqualTo(KycNextAction.RESUBMIT_DOCUMENT);
+    }
+
+    @Test
+    void shouldRecoverUnreadableSelfieIntoResubmissionRequired() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\"}",
+                "P1234567",
+                null
+        );
+        persistDocument(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                "{\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+        persistDocument(
+                clientId,
+                caseId,
+                KycDocumentType.SELFIE,
+                "{\"faceDetectedOnSelfie\":false,\"selfieQuality\":85}"
+        );
+
+        KycCaseResponse status = kycService.getCase(clientId, caseId);
+
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.RESUBMISSION_REQUIRED);
+        assertThat(status.reasonCode()).isEqualTo(KycReasonCode.SELFIE_UNREADABLE);
+        assertThat(status.nextAction()).isEqualTo(KycNextAction.RETRY_SELFIE_CAPTURE);
+    }
+
+    @Test
+    void shouldRecoverDeclaredMismatchIntoResubmissionRequired() {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\"}",
+                "P1234567",
+                null
+        );
+        persistDocument(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                "{\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P9999999\"}"
+        );
+
+        KycCaseResponse status = kycService.getCase(clientId, caseId);
+
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.RESUBMISSION_REQUIRED);
+        assertThat(status.reasonCode()).isEqualTo(KycReasonCode.DECLARED_INFO_MISMATCH);
+        assertThat(status.nextAction()).isEqualTo(KycNextAction.UPDATE_DECLARED_INFO);
+    }
+
+    @Test
     void shouldApproveReadableNationalIdWhenDeclaredIdentityMatches() throws Exception {
         UUID clientId = createClient();
         UUID caseId = createCase(
@@ -400,7 +503,7 @@ class KycServiceUploadIntegrationTest {
     }
 
     @Test
-    void shouldRouteStrongFaceMismatchToManualReview() throws Exception {
+    void shouldRequestResubmissionWhenFaceMatchIsStrongMismatch() throws Exception {
         UUID clientId = createClient();
         UUID caseId = createCase(
                 clientId,
@@ -420,17 +523,17 @@ class KycServiceUploadIntegrationTest {
 
         KycCaseResponse status = kycService.getCase(clientId, caseId);
 
-        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.REVIEW);
-        assertThat(status.reasonCode()).isEqualTo(KycReasonCode.MANUAL_REVIEW_REQUIRED);
-        assertThat(status.nextAction()).isEqualTo(KycNextAction.WAIT_FOR_REVIEW);
-        assertThat(status.statusReason()).contains("below the accepted threshold");
+        assertThat(status.caseStatus()).isEqualTo(KycCaseStatus.RESUBMISSION_REQUIRED);
+        assertThat(status.reasonCode()).isEqualTo(KycReasonCode.BIOMETRIC_MISMATCH);
+        assertThat(status.nextAction()).isEqualTo(KycNextAction.RETRY_SELFIE_CAPTURE);
+        assertThat(status.statusReason()).contains("Biometric face match does not match");
         assertBiometricSignals(status, "MISMATCH", 35);
         assertStatusEndpointWithBiometrics(
                 clientId,
                 caseId,
-                KycCaseStatus.REVIEW,
-                KycReasonCode.MANUAL_REVIEW_REQUIRED,
-                KycNextAction.WAIT_FOR_REVIEW,
+                KycCaseStatus.RESUBMISSION_REQUIRED,
+                KycReasonCode.BIOMETRIC_MISMATCH,
+                KycNextAction.RETRY_SELFIE_CAPTURE,
                 "MISMATCH"
         );
     }
@@ -813,6 +916,22 @@ class KycServiceUploadIntegrationTest {
                 MediaType.APPLICATION_JSON_VALUE,
                 json.getBytes(StandardCharsets.UTF_8)
         );
+    }
+
+    private KycDocumentEntity persistDocument(UUID clientId, UUID caseId, KycDocumentType documentType, String metadataJson) {
+        KycCaseEntity kycCase = kycCaseRepository.findById(caseId).orElseThrow();
+        KycDocumentEntity document = new KycDocumentEntity();
+        document.setClientId(clientId);
+        document.setKycCase(kycCase);
+        document.setDocumentType(documentType);
+        document.setFileName(documentType.name().toLowerCase() + ".jpg");
+        document.setObjectKey(clientId + "/" + caseId + "/" + document.getFileName());
+        document.setBucketName("cpass-kyc");
+        document.setContentType("image/jpeg");
+        document.setSizeBytes(3);
+        document.setStatus(KycDocumentStatus.PENDING);
+        document.setMetadataJson(metadataJson);
+        return kycDocumentRepository.saveAndFlush(document);
     }
 
     private KycUploadResponse uploadStrongSelfie(UUID clientId, UUID caseId, int faceMatchScore) {

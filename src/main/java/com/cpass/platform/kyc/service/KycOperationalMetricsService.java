@@ -156,6 +156,9 @@ public class KycOperationalMetricsService {
                 : kycCase.getStatusReason().toLowerCase(Locale.ROOT);
 
         if (caseStatus == KycCaseStatus.RESUBMISSION_REQUIRED) {
+            if (normalizedReason.contains("biometric") || normalizedReason.contains("face match")) {
+                return KycReasonCode.BIOMETRIC_MISMATCH;
+            }
             if (normalizedReason.contains("selfie")) {
                 return KycReasonCode.SELFIE_UNREADABLE;
             }
@@ -279,6 +282,7 @@ public class KycOperationalMetricsService {
         Map<String, Long> signals = new LinkedHashMap<>();
         signals.put("Add production OCR and image quality scoring", reasonCounts.getOrDefault(KycReasonCode.DOCUMENT_UNREADABLE.name(), 0L));
         signals.put("Improve selfie capture UX and biometric engine", reasonCounts.getOrDefault(KycReasonCode.SELFIE_UNREADABLE.name(), 0L));
+        signals.put("Improve biometric mismatch handling", reasonCounts.getOrDefault(KycReasonCode.BIOMETRIC_MISMATCH.name(), 0L));
         signals.put("Improve declared identity edit/reconciliation UX", reasonCounts.getOrDefault(KycReasonCode.DECLARED_INFO_MISMATCH.name(), 0L));
         signals.put("Tune review thresholds and add manual review tooling", statusCounts.getOrDefault(KycCaseStatus.REVIEW, 0L));
         signals.put("Improve supported document detection and country rules", reasonCounts.getOrDefault(KycReasonCode.UNSUPPORTED_DOCUMENT_TYPE.name(), 0L));

@@ -52,7 +52,8 @@ public class KycFlowService {
     static final String REASON_UNSUPPORTED_DOCUMENT_TYPE = "Unsupported document type for identity verification.";
     static final String REASON_INSUFFICIENT_DOCUMENT_SIGNALS = "Document signals are insufficient for automatic verification.";
     static final String REASON_BIOMETRIC_REVIEW_REQUIRED = "Biometric face match is inconclusive. Manual review required.";
-    static final String REASON_BIOMETRIC_MISMATCH = "Biometric face match is below the accepted threshold. Manual review required.";
+    static final String REASON_BIOMETRIC_MISMATCH = "Biometric face match does not match the identity document. Please retry selfie capture.";
+    static final String REASON_MISSING_REQUIRED_DOCUMENT = "Required identity document is missing.";
 
     private final KycCaseRepository kycCaseRepository;
     private final KycDocumentRepository kycDocumentRepository;
@@ -103,6 +104,33 @@ public class KycFlowService {
         List<KycStepType> steps = properties.stepsFor(kycCase.getLevel());
         Map<String, Object> metadata = readMetadata(kycCase.getMetadataJson());
         List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+        log.info("kyc workflow case loaded requestId={} clientId={} caseId={} status={} level={} createdAt={} updatedAt={} metadataKeys={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                kycCase.getStatus(),
+                kycCase.getLevel(),
+                kycCase.getCreatedAt(),
+                kycCase.getUpdatedAt(),
+                metadata.keySet());
+        log.info("kyc workflow docs found requestId={} clientId={} caseId={} count={} documents={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                documents.size(),
+                documents.stream()
+                        .map(document -> document.getId() + ":" + document.getDocumentType() + ":" + document.getStatus() + ":" + document.getValidityStatus())
+                        .toList());
+        if (documents.isEmpty() && requiresIdentityChecks(steps)) {
+            log.info("kyc workflow no-op requestId={} clientId={} caseId={} reason=no_documents_found",
+                    RequestCorrelation.requestId(),
+                    kycCase.getClientId(),
+                    kycCase.getId());
+            return;
+        }
+
+        ensureDocumentsAnalyzed(kycCase, documents);
+
         KycDocumentEntity primaryDocument = latestIdentityDocument(documents);
         KycDocumentEntity usableIdentityDocument = latestUsableIdentityDocument(documents);
         KycDocumentEntity unsupportedIdentityDocument = latestUnsupportedIdentityDocument(documents);
@@ -138,7 +166,7 @@ public class KycFlowService {
             primaryDocument = usableIdentityDocument == null ? primaryDocument : usableIdentityDocument;
             if (primaryDocument == null) {
                 log.info("kyc workflow aborted reason=missing_primary_document caseId={}", caseId);
-                persist(kycCase, status, signals, reason, null, primaryDocument);
+                persist(kycCase, KycCaseStatus.REVIEW, signals, REASON_MISSING_REQUIRED_DOCUMENT, null, null);
                 return;
             }
             if (isUnsupportedDocumentType(primaryDocument)) {
@@ -178,7 +206,7 @@ public class KycFlowService {
                 signals.add(selfieAnalysis.biometricConfidenceScore());
             } else if (SelfieAnalysisService.FACE_DECISION_MISMATCH.equals(selfieAnalysis.faceDecision())) {
                 log.info("kyc workflow aborted reason=biometric_mismatch caseId={}", caseId);
-                persist(kycCase, KycCaseStatus.REVIEW, signalsWithBiometric(signals, selfieAnalysis), REASON_BIOMETRIC_MISMATCH, null, primaryDocument);
+                persist(kycCase, KycCaseStatus.RESUBMISSION_REQUIRED, signalsWithBiometric(signals, selfieAnalysis), REASON_BIOMETRIC_MISMATCH, null, selfieDocument);
                 return;
             } else {
                 log.info("kyc workflow aborted reason=biometric_review_required caseId={}", caseId);
@@ -240,7 +268,9 @@ public class KycFlowService {
         kycCase.setValidUntil(validUntil);
         kycCase.setLastProcessedAt(Instant.now());
         if (primaryDocument != null) {
-            kycCase.setDocumentExpiryDate(primaryDocument.getExpiryDate());
+            if (isIdentityDocument(primaryDocument)) {
+                kycCase.setDocumentExpiryDate(primaryDocument.getExpiryDate());
+            }
             if (status == KycCaseStatus.APPROVED) {
                 primaryDocument.setStatus(KycDocumentStatus.APPROVED);
                 primaryDocument.setReviewedAt(Instant.now());
@@ -261,6 +291,14 @@ public class KycFlowService {
         syncMapping(kycCase);
         KycReasonCode reasonCode = metricsService.reasonCode(kycCase, primaryDocument);
         metricsService.recordCaseDecision(kycCase, primaryDocument);
+        log.info("kyc workflow final status persisted requestId={} clientId={} caseId={} status={} score={} reason={} validUntil={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                status,
+                score,
+                reason,
+                validUntil);
         log.info("kyc workflow decision requestId={} clientId={} caseId={} status={} productStatus={} score={} reasonCode={} reason={} documentId={} documentStatus={} validityStatus={} processingMillis={}",
                 RequestCorrelation.requestId(),
                 kycCase.getClientId(),
@@ -276,6 +314,91 @@ public class KycFlowService {
                 kycCase.getCreatedAt() == null || kycCase.getLastProcessedAt() == null
                         ? null
                         : java.time.Duration.between(kycCase.getCreatedAt(), kycCase.getLastProcessedAt()).toMillis());
+    }
+
+    private void ensureDocumentsAnalyzed(KycCaseEntity kycCase, List<KycDocumentEntity> documents) {
+        for (KycDocumentEntity document : documents) {
+            if (document.getDocumentType() == KycDocumentType.SELFIE) {
+                ensureSelfieAnalyzed(kycCase, document);
+            } else if (isIdentityDocument(document)) {
+                ensureIdentityDocumentAnalyzed(kycCase, document);
+            }
+        }
+    }
+
+    private void ensureIdentityDocumentAnalyzed(KycCaseEntity kycCase, KycDocumentEntity document) {
+        Map<String, Object> metadata = documentMetadata(document);
+        if (document.getValidityStatus() != null) {
+            log.info("kyc workflow document analysis skipped requestId={} clientId={} caseId={} documentId={} reason=already_enriched",
+                    RequestCorrelation.requestId(),
+                    kycCase.getClientId(),
+                    kycCase.getId(),
+                    document.getId());
+            return;
+        }
+
+        log.info("kyc workflow document analysis launched requestId={} clientId={} caseId={} documentId={} documentType={} metadataKeys={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                document.getId(),
+                document.getDocumentType(),
+                metadata.keySet());
+        DocumentAnalysisService.DocumentAnalysisResult analysis = documentAnalysisService.analyze(document.getDocumentType(), document.getMetadataJson());
+        Map<String, Object> enriched = new HashMap<>(metadata);
+        enriched.put("detectedDocumentType", analysis.detectedDocumentType() == null ? null : analysis.detectedDocumentType().name());
+        enriched.put("supportedDocumentType", analysis.supportedDocumentType());
+        enriched.put("extractedFields", analysis.extractedFields());
+        enriched.put("confidenceScore", analysis.confidenceScore());
+        document.setMetadataJson(writeMetadata(enriched));
+        document.setDocumentNumber(analysis.documentNumber());
+        document.setExpiryDate(analysis.expiryDate());
+        document.setValidityStatus(analysis.validityStatus());
+        kycDocumentRepository.save(document);
+        log.info("kyc workflow document analysis result requestId={} clientId={} caseId={} documentId={} validityStatus={} confidenceScore={} documentNumberPresent={} expiryDate={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                document.getId(),
+                analysis.validityStatus(),
+                analysis.confidenceScore(),
+                analysis.documentNumber() != null,
+                analysis.expiryDate());
+    }
+
+    private void ensureSelfieAnalyzed(KycCaseEntity kycCase, KycDocumentEntity document) {
+        Map<String, Object> metadata = documentMetadata(document);
+        if (document.getValidityStatus() != null) {
+            log.info("kyc workflow selfie analysis skipped requestId={} clientId={} caseId={} documentId={} reason=already_enriched",
+                    RequestCorrelation.requestId(),
+                    kycCase.getClientId(),
+                    kycCase.getId(),
+                    document.getId());
+            return;
+        }
+
+        log.info("kyc workflow selfie analysis launched requestId={} clientId={} caseId={} documentId={} metadataKeys={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                document.getId(),
+                metadata.keySet());
+        SelfieAnalysisService.SelfieAnalysisResult analysis = selfieAnalysisService.analyze(document.getMetadataJson());
+        Map<String, Object> enriched = new HashMap<>(metadata);
+        enriched.putAll(analysis.biometricSignals());
+        enriched.put("extractedFields", analysis.biometricSignals());
+        enriched.put("confidenceScore", analysis.biometricConfidenceScore());
+        document.setMetadataJson(writeMetadata(enriched));
+        document.setValidityStatus(analysis.validityStatus());
+        kycDocumentRepository.save(document);
+        log.info("kyc workflow selfie analysis result requestId={} clientId={} caseId={} documentId={} validityStatus={} faceDecision={} confidenceScore={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                document.getId(),
+                analysis.validityStatus(),
+                analysis.faceDecision(),
+                analysis.biometricConfidenceScore());
     }
 
     private String productStatus(KycCaseStatus status) {

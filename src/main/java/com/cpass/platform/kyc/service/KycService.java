@@ -132,24 +132,66 @@ public class KycService {
         return new KycCheckOrInitResponse(reuseDecision.status(), requiredLevel, kycCase.getId(), kycCase.getReferenceId());
     }
 
-    @Transactional(readOnly = true)
     public KycCaseResponse getCase(UUID clientId, UUID caseId) {
         KycCaseEntity kycCase = kycCaseRepository.findByIdAndClientId(caseId, clientId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "KYC_CASE_NOT_FOUND", "KYC case not found"));
 
         if (kycCase.getStatus() == KycCaseStatus.INITIATED) {
-            List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
-            if (!documents.isEmpty()) {
-                boolean hasIdentity = documents.stream().anyMatch(this::isIdentityDocument);
-                boolean hasSelfie = documents.stream().anyMatch(d -> d.getDocumentType() == KycDocumentType.SELFIE);
-                log.info("kyc workflow diagnostic caseId={} status={} documentCount={} hasIdentity={} hasSelfie={} metadata={}",
-                        caseId, kycCase.getStatus(), documents.size(), hasIdentity, hasSelfie, kycCase.getMetadataJson());
-                log.info("kyc workflow auto-recovery triggered caseId={} documentsFound={}", caseId, documents.size());
-                workflowPublisher.publish(caseId);
-            }
+            kycCase = recoverInitiatedCase(clientId, caseId, kycCase);
         }
 
         return toResponse(kycCase);
+    }
+
+    private KycCaseEntity recoverInitiatedCase(UUID clientId, UUID caseId, KycCaseEntity kycCase) {
+        List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+        boolean hasIdentity = documents.stream().anyMatch(this::isIdentityDocument);
+        boolean hasSelfie = documents.stream().anyMatch(d -> d.getDocumentType() == KycDocumentType.SELFIE);
+        List<String> documentTypes = documents.stream()
+                .map(document -> document.getId() + ":" + document.getDocumentType() + ":" + document.getStatus() + ":" + document.getValidityStatus())
+                .toList();
+
+        log.info("kyc recovery case loaded requestId={} clientId={} caseId={} status={} level={} createdAt={} updatedAt={} metadataPresent={} metadataLength={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                caseId,
+                kycCase.getStatus(),
+                kycCase.getLevel(),
+                kycCase.getCreatedAt(),
+                kycCase.getUpdatedAt(),
+                kycCase.getMetadataJson() != null && !kycCase.getMetadataJson().isBlank(),
+                kycCase.getMetadataJson() == null ? 0 : kycCase.getMetadataJson().length());
+        log.info("kyc recovery docs found requestId={} clientId={} caseId={} count={} hasIdentity={} hasSelfie={} documents={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                caseId,
+                documents.size(),
+                hasIdentity,
+                hasSelfie,
+                documentTypes);
+
+        if (documents.isEmpty()) {
+            log.info("kyc recovery no-op requestId={} clientId={} caseId={} reason=no_documents_found", RequestCorrelation.requestId(), clientId, caseId);
+            return kycCase;
+        }
+
+        log.info("kyc recovery flow decision started requestId={} clientId={} caseId={} documentCount={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                caseId,
+                documents.size());
+        kycFlowService.process(caseId);
+        KycCaseEntity refreshed = kycCaseRepository.findByIdAndClientId(caseId, clientId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "KYC_CASE_NOT_FOUND", "KYC case not found"));
+        log.info("kyc recovery flow decision result requestId={} clientId={} caseId={} previousStatus={} finalStatus={} score={} reason={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                caseId,
+                kycCase.getStatus(),
+                refreshed.getStatus(),
+                refreshed.getScore(),
+                refreshed.getStatusReason());
+        return refreshed;
     }
 
     @Transactional
@@ -817,6 +859,9 @@ public class KycService {
                                      KycDocumentType documentType) {
         String normalizedReason = statusReason == null ? "" : statusReason.toLowerCase(Locale.ROOT);
         if (caseStatus == KycCaseStatus.RESUBMISSION_REQUIRED) {
+            if (normalizedReason.contains("biometric") || normalizedReason.contains("face match")) {
+                return KycReasonCode.BIOMETRIC_MISMATCH;
+            }
             if (documentType == KycDocumentType.SELFIE || normalizedReason.contains("selfie")) {
                 return KycReasonCode.SELFIE_UNREADABLE;
             }
@@ -858,6 +903,9 @@ public class KycService {
         if (reasonCode == KycReasonCode.DECLARED_INFO_MISMATCH) {
             return KycNextAction.UPDATE_DECLARED_INFO;
         }
+        if (reasonCode == KycReasonCode.BIOMETRIC_MISMATCH) {
+            return KycNextAction.RETRY_SELFIE_CAPTURE;
+        }
         if (reasonCode == KycReasonCode.MANUAL_REVIEW_REQUIRED || caseStatus == KycCaseStatus.REVIEW) {
             return KycNextAction.WAIT_FOR_REVIEW;
         }
@@ -873,6 +921,9 @@ public class KycService {
         }
         if (reasonCode == KycReasonCode.DECLARED_INFO_MISMATCH) {
             return KycFlowService.REASON_DECLARED_INFO_MISMATCH;
+        }
+        if (reasonCode == KycReasonCode.BIOMETRIC_MISMATCH) {
+            return KycFlowService.REASON_BIOMETRIC_MISMATCH;
         }
         if (reasonCode == KycReasonCode.UNSUPPORTED_DOCUMENT_TYPE) {
             return KycFlowService.REASON_UNSUPPORTED_DOCUMENT_TYPE;
@@ -895,6 +946,9 @@ public class KycService {
         }
         if (reasonCode == KycReasonCode.DECLARED_INFO_MISMATCH) {
             return "Ask the user to correct the declared identity information or submit the matching document.";
+        }
+        if (reasonCode == KycReasonCode.BIOMETRIC_MISMATCH) {
+            return "Ask the user to retake the selfie or restart with matching identity evidence.";
         }
         if (reasonCode == KycReasonCode.UNSUPPORTED_DOCUMENT_TYPE) {
             return "Ask the user to submit a passport, national ID, voter card or driver license.";
