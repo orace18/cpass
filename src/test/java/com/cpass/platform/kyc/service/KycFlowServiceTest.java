@@ -102,7 +102,7 @@ class KycFlowServiceTest {
         when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
         
         SelfieAnalysisService.SelfieAnalysisResult selfieResult = new SelfieAnalysisService.SelfieAnalysisResult(
-                KycDocumentValidityStatus.VALID, true, 100, true, 90, SelfieAnalysisService.FACE_DECISION_MATCH, 85, Map.of()
+                true, true, 100, true, 90, SelfieAnalysisService.FACE_DECISION_MATCH, 85, KycDocumentValidityStatus.VALID, Map.of()
         );
         when(selfieAnalysisService.analyze(any())).thenReturn(selfieResult);
 
@@ -154,7 +154,7 @@ class KycFlowServiceTest {
         when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc, selfieDoc));
         
         SelfieAnalysisService.SelfieAnalysisResult selfieResult = new SelfieAnalysisService.SelfieAnalysisResult(
-                KycDocumentValidityStatus.UNREADABLE, false, 0, false, 0, null, 0, Map.of()
+                false, false, 0, false, 0, null, 0, KycDocumentValidityStatus.UNREADABLE, Map.of()
         );
         when(selfieAnalysisService.analyze(any())).thenReturn(selfieResult);
 
