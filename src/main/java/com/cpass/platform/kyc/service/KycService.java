@@ -297,6 +297,11 @@ public class KycService {
             if (selfieUpload) {
                 caseMetadata.put("selfieDocumentId", saved.getId().toString());
                 caseMetadata.putAll(selfieAnalysis.biometricSignals());
+            } else {
+                caseMetadata.put("identityDocumentId", saved.getId().toString());
+                if (analysis != null && analysis.extractedFields() != null) {
+                    caseMetadata.put("extractedFields", analysis.extractedFields());
+                }
             }
             caseMetadata.put("lastRequestId", RequestCorrelation.requestId());
             kycCase.setMetadataJson(kycFlowService.writeMetadata(caseMetadata));

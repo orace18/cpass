@@ -92,8 +92,10 @@ public class KycFlowService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void process(java.util.UUID caseId) {
+        log.info("kyc workflow process started caseId={}", caseId);
         Optional<KycCaseEntity> optionalCase = kycCaseRepository.findById(caseId);
         if (optionalCase.isEmpty()) {
+            log.warn("kyc workflow aborted reason=case_not_found caseId={}", caseId);
             return;
         }
 
@@ -115,32 +117,27 @@ public class KycFlowService {
         List<Integer> signals = new ArrayList<>();
 
         if (selfieAnalysis != null && selfieAnalysis.validityStatus() == KycDocumentValidityStatus.UNREADABLE) {
+            log.info("kyc workflow aborted reason=selfie_unreadable caseId={}", caseId);
             persist(kycCase, KycCaseStatus.RESUBMISSION_REQUIRED, List.of(selfieAnalysis.biometricConfidenceScore()), REASON_SELFIE_UNREADABLE, null, selfieDocument);
             return;
         }
 
         if (requiresIdentityChecks(steps) && unsupportedIdentityDocument != null && usableIdentityDocument == null) {
+            log.info("kyc workflow aborted reason=unsupported_document caseId={}", caseId);
             persist(kycCase, KycCaseStatus.RESUBMISSION_REQUIRED, List.of(20), REASON_UNSUPPORTED_DOCUMENT_TYPE, null, unsupportedIdentityDocument);
             return;
         }
 
         if (requiresIdentityChecks(steps) && unreadableIdentityDocument != null && usableIdentityDocument == null) {
+            log.info("kyc workflow aborted reason=document_unreadable caseId={}", caseId);
             persist(kycCase, KycCaseStatus.RESUBMISSION_REQUIRED, List.of(30), REASON_DOCUMENT_UNREADABLE, null, unreadableIdentityDocument);
             return;
-        }
-
-        if (steps.contains(KycStepType.OTP)) {
-            if (!asBoolean(metadata.get("contactVerified"))) {
-                persist(kycCase, status, signals, reason, null, primaryDocument);
-                return;
-            }
-            status = KycCaseStatus.CONTACT_VERIFIED;
-            signals.add(100);
         }
 
         if (requiresIdentityChecks(steps)) {
             primaryDocument = usableIdentityDocument == null ? primaryDocument : usableIdentityDocument;
             if (primaryDocument == null) {
+                log.info("kyc workflow aborted reason=missing_primary_document caseId={}", caseId);
                 persist(kycCase, status, signals, reason, null, primaryDocument);
                 return;
             }
@@ -153,10 +150,12 @@ public class KycFlowService {
                 return;
             }
             if (primaryDocument.getValidityStatus() == KycDocumentValidityStatus.EXPIRED) {
+                log.info("kyc workflow aborted reason=document_expired caseId={}", caseId);
                 persist(kycCase, KycCaseStatus.REJECTED, List.of(20), REASON_DOCUMENT_EXPIRED, null, primaryDocument);
                 return;
             }
             if (hasDeclaredInfoMismatch(primaryDocument, kycCase.getIdentity(), metadata)) {
+                log.info("kyc workflow aborted reason=declared_info_mismatch caseId={}", caseId);
                 persist(kycCase, KycCaseStatus.RESUBMISSION_REQUIRED, List.of(45), REASON_DECLARED_INFO_MISMATCH, null, primaryDocument);
                 return;
             }
@@ -171,15 +170,18 @@ public class KycFlowService {
 
         if (steps.contains(KycStepType.FACE_MATCH)) {
             if (selfieAnalysis == null) {
+                log.info("kyc workflow aborted reason=missing_selfie_analysis caseId={}", caseId);
                 persist(kycCase, KycCaseStatus.REVIEW, signals, REASON_BIOMETRIC_REVIEW_REQUIRED, null, primaryDocument);
                 return;
             }
             if (SelfieAnalysisService.FACE_DECISION_MATCH.equals(selfieAnalysis.faceDecision())) {
                 signals.add(selfieAnalysis.biometricConfidenceScore());
             } else if (SelfieAnalysisService.FACE_DECISION_MISMATCH.equals(selfieAnalysis.faceDecision())) {
+                log.info("kyc workflow aborted reason=biometric_mismatch caseId={}", caseId);
                 persist(kycCase, KycCaseStatus.REVIEW, signalsWithBiometric(signals, selfieAnalysis), REASON_BIOMETRIC_MISMATCH, null, primaryDocument);
                 return;
             } else {
+                log.info("kyc workflow aborted reason=biometric_review_required caseId={}", caseId);
                 persist(kycCase, KycCaseStatus.REVIEW, signalsWithBiometric(signals, selfieAnalysis), REASON_BIOMETRIC_REVIEW_REQUIRED, null, primaryDocument);
                 return;
             }
