@@ -53,10 +53,14 @@ public class DocumentAnalysisService {
     }
 
     public DocumentAnalysisResult analyze(String metadataJson) {
-        return analyze(null, metadataJson);
+        return analyze(null, metadataJson, null);
     }
 
     public DocumentAnalysisResult analyze(KycDocumentType documentType, String metadataJson) {
+        return analyze(documentType, metadataJson, null);
+    }
+
+    public DocumentAnalysisResult analyze(KycDocumentType documentType, String metadataJson, String mrzOcrTextFromEngine) {
         Map<String, Object> metadata = parse(metadataJson);
         boolean readable = asBoolean(metadata.getOrDefault("ocrReadable", Boolean.TRUE));
         KycDocumentType detectedDocumentType = detectDocumentType(documentType, metadata);
@@ -67,6 +71,7 @@ public class DocumentAnalysisService {
         List<Map<String, Object>> fieldSources = fieldSources(metadata);
         String ocrText = firstString(metadata, TEXT_KEYS);
         String mrzOcrText = firstNonBlank(
+                mrzOcrTextFromEngine,
                 firstString(metadata, MRZ_TEXT_KEYS),
                 firstString(asMap(metadata.get("ocr")), MRZ_TEXT_KEYS),
                 firstString(asMap(metadata.get("document")), MRZ_TEXT_KEYS)

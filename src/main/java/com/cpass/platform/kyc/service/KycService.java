@@ -70,6 +70,7 @@ public class KycService {
     private final KycFlowService kycFlowService;
     private final KycFlowProperties kycFlowProperties;
     private final KycOperationalMetricsService metricsService;
+    private final MrzOcrEngine mrzOcrEngine;
     private final String s3Endpoint;
     private final String bucketName;
 
@@ -86,6 +87,7 @@ public class KycService {
                       KycFlowService kycFlowService,
                       KycFlowProperties kycFlowProperties,
                       KycOperationalMetricsService metricsService,
+                      MrzOcrEngine mrzOcrEngine,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.endpoint}") String s3Endpoint,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.bucket}") String bucketName) {
         this.s3Client = s3Client;
@@ -101,6 +103,7 @@ public class KycService {
         this.kycFlowService = kycFlowService;
         this.kycFlowProperties = kycFlowProperties;
         this.metricsService = metricsService;
+        this.mrzOcrEngine = mrzOcrEngine;
         this.s3Endpoint = s3Endpoint;
         this.bucketName = bucketName;
     }
@@ -318,11 +321,13 @@ public class KycService {
             boolean selfieUpload = documentType == KycDocumentType.SELFIE;
             KycImageProcessingService.MrzImageProcessingResult mrzImageProcessing = null;
             String mrzObjectKey = null;
+            String mrzOcrText = null;
             if (!selfieUpload) {
                 mrzImageProcessing = imageProcessingService.prepareMrzReady(fileBytes, mimeType);
                 if (mrzImageProcessing.processed()) {
                     mrzObjectKey = objectKey(clientId, kycCase.getReferenceId(), "ocr-mrz-ready", timestamp, resolvedFileName);
                     uploadToS3(mrzObjectKey, mrzImageProcessing.processedBytes(), mrzImageProcessing.processedMimeType());
+                    mrzOcrText = mrzOcrEngine.extractText(mrzImageProcessing.processedBytes());
                 }
                 log.info("kyc mrz image technical accountHolderId={} documentSlot={} mrzCandidateDetected={} mrzCropCoordinates={} transformationsApplied={} mrzObjectKey={} processedSizeBytes={}",
                         accountHolderId(kycCase, metadataJson),
@@ -332,6 +337,11 @@ public class KycService {
                         mrzImageProcessing.transformationsApplied(),
                         mrzObjectKey,
                         mrzImageProcessing.processedBytes().length);
+                log.info("kyc mrz ocr ocrEngine={} ocrExecuted={} mrzOcrTextRawPresent={} bytesScanned={}",
+                        mrzOcrEngine.engineName(),
+                        mrzImageProcessing.processed(),
+                        mrzOcrText != null && !mrzOcrText.isBlank(),
+                        mrzImageProcessing.processed() ? mrzImageProcessing.processedBytes().length : 0);
             }
 
             log.info("kyc image technical accountHolderId={} documentSlot={} originalWidth={} originalHeight={} originalSizeBytes={} processedWidth={} processedHeight={} processedSizeBytes={} mimeType={} compressionQuality={} transformationsApplied={} finalObjectKey={}",
@@ -366,7 +376,7 @@ public class KycService {
                         selfieAnalysis.faceDecision(),
                         selfieAnalysis.biometricConfidenceScore());
             } else {
-                analysis = documentAnalysisService.analyze(documentType, metadataJson);
+                analysis = documentAnalysisService.analyze(documentType, metadataJson, mrzOcrText);
                 log.info("kyc upload analysis documentType={} detectedDocumentType={} supportedDocumentType={} mappedProviderType={} fileBytes={} fileName={} mimeType={} validityStatus={} documentNumberPresent={} expiryDate={} confidenceScore={} ocrMrzReadyObjectKey={} mrzOcrTextRawPresent={} mrzParseSuccess={} documentNumberExtracted={} expiryDateExtracted={} finalExtractionSource={}",
                         documentType,
                         analysis.detectedDocumentType(),
