@@ -179,6 +179,35 @@ class KycServiceUploadIntegrationTest {
     }
 
     @Test
+    void shouldFallbackToOriginalObjectWhenImageProcessingIsImpossible() throws Exception {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\"}",
+                "P1234567",
+                null
+        );
+
+        KycUploadResponse response = kycService.upload(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                file("passport.jpg"),
+                "{\"accountHolderId\":\"acc_1\",\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+
+        KycDocumentEntity saved = kycDocumentRepository.findById(response.documentId()).orElseThrow();
+        ArgumentCaptor<PutObjectRequest> putCaptor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(putCaptor.capture(), any(RequestBody.class));
+
+        assertThat(saved.getObjectKey()).contains("/original/");
+        assertThat(saved.getObjectKey()).doesNotContain("/ocr-ready/");
+        assertThat(saved.getMetadataJson()).contains("\"finalObjectKey\":\"" + saved.getObjectKey() + "\"");
+        assertThat(saved.getMetadataJson()).contains("fallback_original_decode_failed");
+        assertThat(putCaptor.getValue().key()).isEqualTo(saved.getObjectKey());
+    }
+
+    @Test
     void shouldAttachSelfieDocumentToCaseOnUpload() {
         UUID clientId = createClient();
         UUID caseId = createCase(clientId);
