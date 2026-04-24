@@ -29,6 +29,7 @@ class KycFlowServiceTest {
     private ProviderConfigRepository providerConfigRepository;
     private KycFlowProperties properties;
     private KycOperationalMetricsService metricsService;
+    private KycRequirementService requirementService;
     private ObjectMapper objectMapper;
 
     private KycFlowService kycFlowService;
@@ -44,6 +45,7 @@ class KycFlowServiceTest {
         providerConfigRepository = mock(ProviderConfigRepository.class);
         properties = mock(KycFlowProperties.class);
         metricsService = mock(KycOperationalMetricsService.class);
+        requirementService = mock(KycRequirementService.class);
         objectMapper = new ObjectMapper();
 
         when(properties.stepsFor(any())).thenReturn(List.of(
@@ -55,6 +57,8 @@ class KycFlowServiceTest {
         when(properties.autoApproveScoreThreshold()).thenReturn(75);
         when(properties.fallbackScoreThreshold()).thenReturn(70);
         when(properties.validityPeriod()).thenReturn(java.time.Duration.ofDays(365));
+        when(requirementService.hasActiveCountryConfig(any())).thenReturn(false);
+        when(requirementService.normalizeCountry(any())).thenReturn(KycRequirementService.DEFAULT_COUNTRY);
 
         kycFlowService = new KycFlowService(
                 kycCaseRepository,
@@ -67,6 +71,7 @@ class KycFlowServiceTest {
                 List.of(),
                 properties,
                 metricsService,
+                requirementService,
                 objectMapper
         );
     }
@@ -142,6 +147,35 @@ class KycFlowServiceTest {
 
         assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.APPROVED);
         assertThat(kycCase.getScore()).isEqualTo(88); // Average of 90 and 85
+        verify(kycCaseRepository).save(kycCase);
+    }
+
+    @Test
+    void shouldLaunchDecisionForBjCipWithFrontAndSelfieOnly() throws Exception {
+        UUID caseId = UUID.randomUUID();
+        KycCaseEntity kycCase = caseEntity(caseId);
+        kycCase.setMetadataJson(objectMapper.writeValueAsString(Map.of("country", "BJ")));
+        KycDocumentEntity cipFront = validIdentityDocument(KycDocumentType.CIP, "IDENTITY_FRONT");
+        cipFront.setKycCase(kycCase);
+        KycDocumentEntity selfieDoc = validSelfieDocument();
+        selfieDoc.setKycCase(kycCase);
+
+        when(requirementService.normalizeCountry("BJ")).thenReturn("BJ");
+        when(requirementService.hasActiveCountryConfig("BJ")).thenReturn(true);
+        when(requirementService.requiredSlotsFor("BJ", KycDocumentType.CIP))
+                .thenReturn(List.of(KycRequirementService.SLOT_IDENTITY_FRONT, KycRequirementService.SLOT_SELFIE));
+        when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(cipFront, selfieDoc));
+        when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
+
+        SelfieAnalysisService.SelfieAnalysisResult selfieResult = new SelfieAnalysisService.SelfieAnalysisResult(
+                true, true, 100, true, 90, SelfieAnalysisService.FACE_DECISION_MATCH, 85, KycDocumentValidityStatus.VALID, Map.of()
+        );
+        when(selfieAnalysisService.analyze(any())).thenReturn(selfieResult);
+
+        kycFlowService.process(caseId);
+
+        assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.APPROVED);
         verify(kycCaseRepository).save(kycCase);
     }
 

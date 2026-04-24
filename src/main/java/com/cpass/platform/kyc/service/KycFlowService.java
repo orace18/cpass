@@ -73,6 +73,7 @@ public class KycFlowService {
     private final KycFlowProperties properties;
     private final KycOperationalMetricsService metricsService;
     private final ObjectMapper objectMapper;
+    private final KycRequirementService requirementService;
 
     public KycFlowService(KycCaseRepository kycCaseRepository,
                           KycDocumentRepository kycDocumentRepository,
@@ -84,6 +85,7 @@ public class KycFlowService {
                           List<KycProviderAdapter> providers,
                           KycFlowProperties properties,
                           KycOperationalMetricsService metricsService,
+                          KycRequirementService requirementService,
                           ObjectMapper objectMapper) {
         this.kycCaseRepository = kycCaseRepository;
         this.kycDocumentRepository = kycDocumentRepository;
@@ -95,6 +97,7 @@ public class KycFlowService {
         this.providersByCode = providers.stream().collect(Collectors.toMap(KycProviderAdapter::providerCode, Function.identity()));
         this.properties = properties;
         this.metricsService = metricsService;
+        this.requirementService = requirementService;
         this.objectMapper = objectMapper;
     }
 
@@ -488,6 +491,27 @@ public class KycFlowService {
     }
 
     private DocumentReadiness documentReadiness(List<KycStepType> steps, List<KycDocumentEntity> documents) {
+        String country = countryOf(documents);
+        Optional<KycDocumentEntity> selectedIdentity = documents.stream()
+                .filter(this::isIdentityDocument)
+                .reduce((first, second) -> second);
+        if (requiresIdentityChecks(steps)
+                && selectedIdentity.isPresent()
+                && requirementService.hasActiveCountryConfig(country)) {
+            List<String> requiredDocuments = new ArrayList<>(requirementService.requiredSlotsFor(country, selectedIdentity.get().getDocumentType()));
+            if (!steps.contains(KycStepType.FACE_MATCH)) {
+                requiredDocuments.remove(KycRequirementService.SLOT_SELFIE);
+            }
+            Set<String> receivedDocuments = receivedDocuments(documents);
+            Set<String> missingDocuments = new LinkedHashSet<>(requiredDocuments);
+            missingDocuments.removeAll(receivedDocuments);
+            return new DocumentReadiness(
+                    List.copyOf(requiredDocuments),
+                    List.copyOf(receivedDocuments),
+                    List.copyOf(missingDocuments)
+            );
+        }
+
         Set<String> requiredDocuments = new LinkedHashSet<>();
         if (requiresIdentityChecks(steps)) {
             requiredDocuments.add(SLOT_IDENTITY_FRONT);
@@ -505,6 +529,19 @@ public class KycFlowService {
                 List.copyOf(receivedDocuments),
                 List.copyOf(missingDocuments)
         );
+    }
+
+    private String countryOf(List<KycDocumentEntity> documents) {
+        return documents.stream()
+                .map(KycDocumentEntity::getKycCase)
+                .filter(java.util.Objects::nonNull)
+                .map(KycCaseEntity::getMetadataJson)
+                .map(this::readMetadata)
+                .map(metadata -> asString(metadata.get("country")))
+                .filter(java.util.Objects::nonNull)
+                .findFirst()
+                .map(requirementService::normalizeCountry)
+                .orElse(KycRequirementService.DEFAULT_COUNTRY);
     }
 
     private Optional<KycDocumentType> requiredBackDocumentType(List<KycDocumentEntity> documents) {

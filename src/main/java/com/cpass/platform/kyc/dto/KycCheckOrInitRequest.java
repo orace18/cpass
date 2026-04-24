@@ -13,6 +13,7 @@ public record KycCheckOrInitRequest(
         String documentNumber,
         String faceHash,
         KycLevel requestedLevel,
-        Boolean contactVerified
+        Boolean contactVerified,
+        String country
 ) {
 }

@@ -10,9 +10,11 @@ import com.cpass.platform.kyc.dto.KycCheckOrInitRequest;
 import com.cpass.platform.kyc.dto.KycCheckOrInitResponse;
 import com.cpass.platform.kyc.dto.KycContactVerificationRequest;
 import com.cpass.platform.kyc.dto.KycFieldVerificationRequest;
+import com.cpass.platform.kyc.dto.KycRequirementResponse;
 import com.cpass.platform.kyc.dto.KycSocialValidationRequest;
 import com.cpass.platform.kyc.dto.KycUploadResponse;
 import com.cpass.platform.kyc.dto.KycVerifyRequest;
+import com.cpass.platform.kyc.service.KycRequirementService;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -39,9 +41,17 @@ public class KycController {
     private static final Logger log = LoggerFactory.getLogger(KycController.class);
 
     private final KycService kycService;
+    private final KycRequirementService requirementService;
 
-    public KycController(KycService kycService) {
+    public KycController(KycService kycService, KycRequirementService requirementService) {
         this.kycService = kycService;
+        this.requirementService = requirementService;
+    }
+
+    @GetMapping("/requirements")
+    @PreAuthorize("hasAuthority('SCOPE_kyc:read')")
+    public KycRequirementResponse requirements(@RequestParam(required = false) String country) {
+        return requirementService.requirementsFor(country);
     }
 
     @PostMapping("/check-or-init")
@@ -136,7 +146,7 @@ public class KycController {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "UNSUPPORTED_DOCUMENT_TYPE",
-                    "documentType must be PASSPORT, NATIONAL_ID, VOTER_CARD or DRIVER_LICENSE"
+                    "documentType must be PASSPORT, CIP, NATIONAL_ID, VOTER_CARD, SCHOOL_CARD or DRIVER_LICENSE"
             );
         }
 
@@ -166,8 +176,10 @@ public class KycController {
 
     private boolean isSupportedIdentityDocument(KycDocumentType documentType) {
         return documentType == KycDocumentType.PASSPORT
+                || documentType == KycDocumentType.CIP
                 || documentType == KycDocumentType.NATIONAL_ID
                 || documentType == KycDocumentType.VOTER_CARD
+                || documentType == KycDocumentType.SCHOOL_CARD
                 || documentType == KycDocumentType.DRIVER_LICENSE;
     }
 

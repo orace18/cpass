@@ -268,9 +268,11 @@ public class DocumentAnalysisService {
 
     private boolean isSupportedIdentityDocument(KycDocumentType documentType) {
         return documentType == KycDocumentType.PASSPORT
+                || documentType == KycDocumentType.CIP
                 || documentType == KycDocumentType.NATIONAL_ID
                 || documentType == KycDocumentType.ID_CARD
                 || documentType == KycDocumentType.VOTER_CARD
+                || documentType == KycDocumentType.SCHOOL_CARD
                 || documentType == KycDocumentType.DRIVER_LICENSE;
     }
 

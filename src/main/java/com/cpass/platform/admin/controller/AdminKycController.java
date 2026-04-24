@@ -5,8 +5,11 @@ import com.cpass.platform.kyc.domain.KycCaseEntity;
 import com.cpass.platform.kyc.domain.KycCaseStatus;
 import com.cpass.platform.kyc.domain.KycDocumentEntity;
 import com.cpass.platform.kyc.dto.AdminKycReviewRequest;
+import com.cpass.platform.kyc.dto.KycDocumentRequirementAdminResponse;
+import com.cpass.platform.kyc.dto.KycDocumentRequirementRequest;
 import com.cpass.platform.kyc.dto.KycOperationalMetricsResponse;
 import com.cpass.platform.kyc.service.KycOperationalMetricsService;
+import com.cpass.platform.kyc.service.KycRequirementService;
 import com.cpass.platform.kyc.service.KycService;
 import jakarta.validation.Valid;
 import org.springframework.http.ContentDisposition;
@@ -14,9 +17,11 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -34,19 +39,43 @@ public class AdminKycController {
 
     private final KycService kycService;
     private final KycOperationalMetricsService metricsService;
+    private final KycRequirementService requirementService;
     private final ClientRepository clientRepository;
 
     public AdminKycController(KycService kycService,
                               KycOperationalMetricsService metricsService,
+                              KycRequirementService requirementService,
                               ClientRepository clientRepository) {
         this.kycService = kycService;
         this.metricsService = metricsService;
+        this.requirementService = requirementService;
         this.clientRepository = clientRepository;
     }
 
     @GetMapping("/stats")
     public KycOperationalMetricsResponse stats() {
         return metricsService.snapshot();
+    }
+
+    @GetMapping("/requirements")
+    public List<KycDocumentRequirementAdminResponse> requirements(@RequestParam(required = false) String country) {
+        return requirementService.list(country);
+    }
+
+    @PostMapping("/requirements")
+    public KycDocumentRequirementAdminResponse createRequirement(@Valid @RequestBody KycDocumentRequirementRequest request) {
+        return requirementService.create(request);
+    }
+
+    @PutMapping("/requirements/{id}")
+    public KycDocumentRequirementAdminResponse updateRequirement(@PathVariable UUID id,
+                                                                 @Valid @RequestBody KycDocumentRequirementRequest request) {
+        return requirementService.update(id, request);
+    }
+
+    @DeleteMapping("/requirements/{id}")
+    public void deleteRequirement(@PathVariable UUID id) {
+        requirementService.delete(id);
     }
 
     @GetMapping

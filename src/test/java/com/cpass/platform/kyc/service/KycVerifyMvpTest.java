@@ -39,7 +39,8 @@ public class KycVerifyMvpTest {
                 "123456789",
                 "hash123",
                 null,
-                true
+                true,
+                null
         );
 
         KycCheckOrInitResponse init = kycService.checkOrInit(clientId, KycLevel.LEVEL_1, initReq);

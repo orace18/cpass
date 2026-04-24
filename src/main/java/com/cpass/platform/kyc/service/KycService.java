@@ -82,6 +82,7 @@ public class KycService {
     private final KycFlowProperties kycFlowProperties;
     private final KycOperationalMetricsService metricsService;
     private final MrzOcrEngine mrzOcrEngine;
+    private final KycRequirementService requirementService;
     private final String s3Endpoint;
     private final String bucketName;
 
@@ -99,6 +100,7 @@ public class KycService {
                       KycFlowProperties kycFlowProperties,
                       KycOperationalMetricsService metricsService,
                       MrzOcrEngine mrzOcrEngine,
+                      KycRequirementService requirementService,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.endpoint}") String s3Endpoint,
                       @org.springframework.beans.factory.annotation.Value("${app.kyc.s3.bucket}") String bucketName) {
         this.s3Client = s3Client;
@@ -115,6 +117,7 @@ public class KycService {
         this.kycFlowProperties = kycFlowProperties;
         this.metricsService = metricsService;
         this.mrzOcrEngine = mrzOcrEngine;
+        this.requirementService = requirementService;
         this.s3Endpoint = s3Endpoint;
         this.bucketName = bucketName;
     }
@@ -301,6 +304,8 @@ public class KycService {
                     originalFileName,
                     mimeType,
                     metadataSummary(metadataJson));
+
+            validateRequirementUpload(kycCase, documentType, metadataJson);
 
             if (originalFileName == null || originalFileName.isBlank()) {
                 log.warn("kyc upload missing multipart filename caseId={} documentType={} generatedFileName={}",
@@ -521,6 +526,9 @@ public class KycService {
                     exception.getClass().getName(),
                     exception.getMessage(),
                     exception);
+            if (exception instanceof ApiException apiException) {
+                throw apiException;
+            }
             throw new ApiException(HttpStatus.BAD_GATEWAY, "KYC_UPLOAD_FAILED", "Failed to upload KYC document");
         }
     }
@@ -891,6 +899,40 @@ public class KycService {
                 activeCases.stream().map(KycCaseEntity::getId).toList());
     }
 
+    private void validateRequirementUpload(KycCaseEntity kycCase, KycDocumentType documentType, String metadataJson) {
+        String country = countryOf(kycCase, metadataJson);
+        if (documentType != KycDocumentType.SELFIE
+                && requirementService.hasActiveCountryConfig(country)
+                && !requirementService.isAcceptedDocument(country, documentType)) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "KYC_DOCUMENT_TYPE_NOT_ACCEPTED",
+                    "Document type is not accepted for this country"
+            );
+        }
+
+        String slot = requirementService.normalizeSlot(documentSlot(documentAnalysisService.parse(metadataJson)));
+        if (slot == null || documentType == KycDocumentType.SELFIE) {
+            return;
+        }
+        List<String> requiredSlots = requirementService.requiredSlotsFor(country, documentType);
+        if (!requiredSlots.isEmpty() && !requiredSlots.contains(slot)) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "KYC_SLOT_NOT_REQUIRED",
+                    "Document slot is not required for this country and document type"
+            );
+        }
+    }
+
+    private String countryOf(KycCaseEntity kycCase, String metadataJson) {
+        String metadataCountry = asString(documentAnalysisService.parse(metadataJson).get("country"));
+        if (metadataCountry != null) {
+            return requirementService.normalizeCountry(metadataCountry);
+        }
+        return requirementService.normalizeCountry(asString(metadataOf(kycCase).get("country")));
+    }
+
     private IdentityEntity newIdentity(KycCheckOrInitRequest request) {
         IdentityEntity identity = new IdentityEntity();
         identity.setDocumentNumber(blankToNull(request.documentNumber()));
@@ -967,6 +1009,7 @@ public class KycService {
         metadata.put("phoneNumber", request.phoneNumber());
         metadata.put("documentNumber", request.documentNumber());
         metadata.put("faceHash", request.faceHash());
+        metadata.put("country", requirementService.normalizeCountry(request.country()));
         metadata.put("contactVerified", Boolean.TRUE.equals(request.contactVerified()));
         metadata.put("lastRequestId", RequestCorrelation.requestId());
 
@@ -1115,6 +1158,18 @@ public class KycService {
     }
 
     private boolean documentsReadyForDecision(List<KycDocumentEntity> documents) {
+        KycCaseEntity kycCase = documents.stream()
+                .map(KycDocumentEntity::getKycCase)
+                .filter(java.util.Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        String country = kycCase == null ? KycRequirementService.DEFAULT_COUNTRY : countryOf(kycCase, null);
+        Optional<KycDocumentEntity> selectedIdentity = latestIdentityDocument(documents);
+        if (selectedIdentity.isPresent() && requirementService.hasActiveCountryConfig(country)) {
+            List<String> requiredSlots = requirementService.requiredSlotsFor(country, selectedIdentity.get().getDocumentType());
+            return requiredSlots.stream().allMatch(slot -> hasRequiredSlot(documents, selectedIdentity.get().getDocumentType(), slot));
+        }
+
         boolean hasIdentityFront = false;
         boolean hasIdentityBack = false;
         boolean requiresIdentityBack = false;
@@ -1148,6 +1203,16 @@ public class KycService {
         return hasIdentityFront && hasSelfie && (!requiresIdentityBack || hasIdentityBack);
     }
 
+    private boolean hasRequiredSlot(List<KycDocumentEntity> documents, KycDocumentType documentType, String slot) {
+        if (KycRequirementService.SLOT_SELFIE.equals(slot)) {
+            return documents.stream().anyMatch(document -> document.getDocumentType() == KycDocumentType.SELFIE);
+        }
+        return documents.stream()
+                .filter(document -> document.getDocumentType() == documentType)
+                .anyMatch(document -> slot.equals(documentSlot(document))
+                        || (KycRequirementService.SLOT_IDENTITY_FRONT.equals(slot) && documentSlot(document) == null));
+    }
+
     private boolean requiresBack(KycDocumentEntity document) {
         KycDocumentType documentType = document.getDocumentType();
         boolean twoSidedType = documentType == KycDocumentType.ID_CARD
@@ -1166,7 +1231,10 @@ public class KycService {
     }
 
     private String documentSlot(KycDocumentEntity document) {
-        Map<String, Object> metadata = documentMetadata(document);
+        return documentSlot(documentMetadata(document));
+    }
+
+    private String documentSlot(Map<String, Object> metadata) {
         String rawSlot = blankToNull(firstNonBlank(
                 firstNonBlank(asString(metadata.get("documentSlot")), asString(metadata.get("documentSide"))),
                 firstNonBlank(asString(metadata.get("side")), asString(metadata.get("slot")))
@@ -1183,7 +1251,10 @@ public class KycService {
         if (normalized.contains("FRONT") || normalized.contains("RECTO")) {
             return "IDENTITY_FRONT";
         }
-        return null;
+        if (normalized.contains("SELFIE")) {
+            return "SELFIE";
+        }
+        return normalized;
     }
 
     private String resubmissionReason(KycDocumentEntity document, boolean selfie) {

@@ -3,6 +3,7 @@ package com.cpass.platform.kyc.service;
 import com.cpass.platform.client.domain.ClientEntity;
 import com.cpass.platform.client.domain.ClientScope;
 import com.cpass.platform.client.infra.ClientRepository;
+import com.cpass.platform.common.exception.ApiException;
 import com.cpass.platform.common.security.JwtService;
 import com.cpass.platform.common.security.UserJwtService;
 import com.cpass.platform.kyc.domain.IdentityEntity;
@@ -55,6 +56,7 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.nullValue;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -406,7 +408,8 @@ class KycServiceUploadIntegrationTest {
                 "P1234567",
                 null,
                 null,
-                true
+                true,
+                null
         );
 
         KycCheckOrInitResponse firstInit = kycService.checkOrInit(clientId, KycLevel.LEVEL_1, request);
@@ -446,6 +449,54 @@ class KycServiceUploadIntegrationTest {
         assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(archivedCase))
                 .extracting(KycDocumentEntity::getId)
                 .containsExactly(firstUpload.documentId());
+    }
+
+    @Test
+    void shouldRejectBackUploadForBjCipWithoutPollutingCaseDocuments() {
+        UUID clientId = createClient();
+        KycCheckOrInitRequest request = new KycCheckOrInitRequest(
+                "user_123",
+                "Grace Doe",
+                java.time.LocalDate.of(1990, 5, 20),
+                "+22962000000",
+                null,
+                null,
+                null,
+                true,
+                "BJ"
+        );
+        KycCheckOrInitResponse init = kycService.checkOrInit(clientId, KycLevel.LEVEL_1, request);
+
+        assertThatThrownBy(() -> kycService.upload(
+                clientId,
+                init.kycCaseId(),
+                KycDocumentType.CIP,
+                file("cip-back.jpg"),
+                "{\"country\":\"BJ\",\"documentSlot\":\"IDENTITY_BACK\"}"
+        ))
+                .isInstanceOf(ApiException.class)
+                .extracting("code")
+                .isEqualTo("KYC_SLOT_NOT_REQUIRED");
+
+        KycCaseEntity savedCase = kycCaseRepository.findById(init.kycCaseId()).orElseThrow();
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(savedCase)).isEmpty();
+    }
+
+    @Test
+    void shouldExposeBjRequirementsEndpoint() throws Exception {
+        UUID clientId = createClient();
+        String token = jwtService.issueToken(clientRepository.findById(clientId).orElseThrow()).token();
+
+        mockMvc.perform(get("/kyc/requirements")
+                        .param("country", "BJ")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.country").value("BJ"))
+                .andExpect(jsonPath("$.acceptedDocuments[0].documentType").value("CIP"))
+                .andExpect(jsonPath("$.acceptedDocuments[0].requiredSlots[0].slot").value("IDENTITY_FRONT"))
+                .andExpect(jsonPath("$.acceptedDocuments[0].requiredSlots[1].slot").value("SELFIE"))
+                .andExpect(jsonPath("$.acceptedDocuments[1].documentType").value("VOTER_CARD"))
+                .andExpect(jsonPath("$.acceptedDocuments[2].documentType").value("SCHOOL_CARD"));
     }
 
     @Test
