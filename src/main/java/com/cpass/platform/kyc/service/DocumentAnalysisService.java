@@ -45,6 +45,7 @@ public class DocumentAnalysisService {
     );
     private static final Pattern DATE_PATTERN = Pattern.compile("(\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}[-/]\\d{1,2}[-/]\\d{2,4})");
     private static final Pattern FULL_NAME_PATTERN = Pattern.compile("(?im)^(full\\s*name|name|holder\\s*name)\\s*[:\\-]\\s*(.+)$");
+    private static final Pattern TD3_LINE_2_PATTERN = Pattern.compile("[A-Z0-9<]{9}[0-9][A-Z<]{3}[0-9OIL]{6}[0-9OIL][MF<][0-9OIL]{6}[0-9OIL].*");
 
     private final ObjectMapper objectMapper;
 
@@ -86,7 +87,7 @@ public class DocumentAnalysisService {
         LocalDate expiryDate = firstNonNull(firstDate(fieldSources, EXPIRY_DATE_KEYS), parseDate(mrzFields.get("expiryDate")), extractDate(ocrText, "expiry"));
         Integer faceMatchScore = asInteger(metadata.get("faceMatchScore"));
         String faceHash = asString(metadata.get("faceHash"));
-        String finalExtractionSource = mrzAnalysis.parseSuccess()
+        String finalExtractionSource = mrzAnalysis.hasRequiredFields()
                 ? "MRZ_OCR"
                 : hasGlobalOcrSignal(ocrText, fullName, birthDate, documentNumber, expiryDate) ? "GLOBAL_OCR" : "FALLBACK";
         Map<String, Object> extractedFields = extractedFields(
@@ -112,14 +113,14 @@ public class DocumentAnalysisService {
                 ),
                 abbreviate(mrzOcrText),
                 abbreviate(mrzAnalysis.normalizedText()),
-                mrzAnalysis.parseSuccess(),
+                mrzAnalysis.hasRequiredFields(),
                 documentNumber != null,
                 expiryDate != null,
                 finalExtractionSource);
 
         KycDocumentValidityStatus validityStatus;
         Integer confidenceScore;
-        if (!readable && !mrzAnalysis.parseSuccess()) {
+        if (!readable && !mrzAnalysis.hasRequiredFields()) {
             validityStatus = KycDocumentValidityStatus.UNREADABLE;
             confidenceScore = 30;
         } else if (isMediaDocument(documentType)) {
@@ -136,8 +137,8 @@ public class DocumentAnalysisService {
             confidenceScore = 30;
         } else {
             validityStatus = KycDocumentValidityStatus.VALID;
-            confidenceScore = mrzAnalysis.parseSuccess()
-                    ? Math.max(85, confidenceScore(fullName, birthDate, documentNumber, expiryDate, ocrText))
+            confidenceScore = mrzAnalysis.hasRequiredFields()
+                    ? Math.max(mrzAnalysis.strictChecksum() ? 90 : 75, confidenceScore(fullName, birthDate, documentNumber, expiryDate, ocrText))
                     : confidenceScore(fullName, birthDate, documentNumber, expiryDate, ocrText);
         }
 
@@ -359,32 +360,41 @@ public class DocumentAnalysisService {
         String normalizedText = String.join("\n", lines);
         boolean candidateDetected = lines.stream().anyMatch(line -> line.startsWith("P<")) || (text != null && text.contains("<"));
         if (lines.size() < 2) {
-            return new MrzAnalysis(candidateDetected, normalizedText, false, Collections.emptyMap());
+            return new MrzAnalysis(candidateDetected, normalizedText, false, ChecksumStatus.FAILED, Collections.emptyMap());
         }
 
         String firstLine = null;
         String secondLine = null;
         for (int index = 0; index < lines.size() - 1; index++) {
             String current = lines.get(index);
-            if (current.startsWith("P<") && current.length() >= 44 && lines.get(index + 1).length() >= 44) {
-                firstLine = current.substring(0, 44);
-                secondLine = lines.get(index + 1).substring(0, 44);
+            String next = lines.get(index + 1);
+            if (current.startsWith("P<") && current.length() >= 25 && next.length() >= 28 && looksLikeTd3SecondLine(next)) {
+                firstLine = rightPad(current, 44).substring(0, 44);
+                secondLine = rightPad(next, 44).substring(0, 44);
                 break;
             }
         }
         if (firstLine == null || secondLine == null) {
-            return new MrzAnalysis(candidateDetected, normalizedText, false, Collections.emptyMap());
+            return new MrzAnalysis(candidateDetected, normalizedText, false, ChecksumStatus.FAILED, Collections.emptyMap());
         }
-        Map<String, String> fields = parsePassportMrz(firstLine, secondLine);
+        MrzParseResult parseResult = parsePassportMrz(firstLine, secondLine);
+        Map<String, String> fields = parseResult.fields();
         boolean parseSuccess = fields.containsKey("documentNumber") && fields.containsKey("expiryDate");
-        return new MrzAnalysis(true, normalizedText, parseSuccess, fields);
+        log.info("kyc mrz parse attempt candidateNormalizedMrz={} parseAttemptResult={} extractedDocumentNumber={} extractedBirthDate={} extractedExpiryDate={} checksumStatus={}",
+                abbreviate(firstLine + "\n" + secondLine),
+                parseSuccess,
+                fields.get("documentNumber"),
+                fields.get("birthDate"),
+                fields.get("expiryDate"),
+                parseResult.checksumStatus());
+        return new MrzAnalysis(true, normalizedText, parseSuccess, parseResult.checksumStatus(), fields);
     }
 
     private List<String> normalizedMrzLines(String text) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
-        return text.lines()
+        List<String> lines = text.lines()
                 .map(this::normalizeMrzLine)
                 .filter(line -> line.length() >= 20 && (line.contains("<") || line.startsWith("P")))
                 .map(line -> {
@@ -392,11 +402,32 @@ public class DocumentAnalysisService {
                     return passportStart > 0 ? line.substring(passportStart) : line;
                 })
                 .toList();
+        if (lines.size() >= 2) {
+            return lines;
+        }
+        String compact = normalizeMrzLine(text);
+        int firstStart = compact.indexOf("P<");
+        if (firstStart < 0) {
+            return lines;
+        }
+        String fromPassport = compact.substring(firstStart);
+        Matcher secondLineMatcher = Pattern.compile("[A-Z0-9<]{9}[0-9][A-Z<]{3}[0-9OIL]{6}[0-9OIL][MF<][0-9OIL]{6}[0-9OIL]").matcher(fromPassport);
+        if (secondLineMatcher.find() && secondLineMatcher.start() > 0) {
+            return List.of(
+                    rightPad(fromPassport.substring(0, secondLineMatcher.start()), 44),
+                    fromPassport.substring(secondLineMatcher.start())
+            );
+        }
+        return lines;
     }
 
     private String normalizeMrzLine(String line) {
         if (line == null) {
             return "";
+        }
+        if (line.toUpperCase(Locale.ROOT).startsWith("PK")
+                || line.toUpperCase(Locale.ROOT).chars().filter(value -> value == 'K').count() > 3) {
+            line = line.replace('K', '<').replace('k', '<');
         }
         return line.toUpperCase(Locale.ROOT)
                 .replace('«', '<')
@@ -405,25 +436,26 @@ public class DocumentAnalysisService {
                 .replaceAll("[^A-Z0-9<]", "");
     }
 
-    private Map<String, String> parsePassportMrz(String firstLine, String secondLine) {
+    private MrzParseResult parsePassportMrz(String firstLine, String secondLine) {
         if (!firstLine.startsWith("P<") || firstLine.length() != 44 || secondLine.length() != 44) {
-            return Collections.emptyMap();
-        }
-        if (!validCheckDigit(secondLine.substring(0, 9), secondLine.charAt(9))
-                || !validCheckDigit(secondLine.substring(13, 19), secondLine.charAt(19))
-                || !validCheckDigit(secondLine.substring(21, 27), secondLine.charAt(27))) {
-            return Collections.emptyMap();
+            return new MrzParseResult(Collections.emptyMap(), ChecksumStatus.FAILED);
         }
         Map<String, String> fields = new LinkedHashMap<>();
         String country = firstLine.substring(2, 5).replace("<", "").trim();
         if (!country.isBlank()) {
             fields.put("country", country);
         }
-        String namePart = firstLine.substring(5);
+        String namePart = firstLine.substring(5).replace('K', '<');
         String[] names = namePart.split("<<", 2);
         String surname = names.length > 0 ? names[0].replace('<', ' ').trim() : "";
         String givenNames = names.length > 1 ? names[1].replace('<', ' ').trim() : "";
         String fullName = (givenNames + " " + surname).trim().replaceAll("\\s+", " ");
+        if (!surname.isBlank()) {
+            fields.put("surname", surname);
+        }
+        if (!givenNames.isBlank()) {
+            fields.put("givenNames", givenNames);
+        }
         if (!fullName.isBlank()) {
             fields.put("fullName", fullName);
         }
@@ -436,15 +468,49 @@ public class DocumentAnalysisService {
         if (!nationality.isBlank()) {
             fields.put("nationality", nationality);
         }
-        LocalDate birthDate = parseMrzDate(secondLine.substring(13, 19), false);
+        String birthRaw = normalizeMrzNumeric(secondLine.substring(13, 19));
+        String birthCheck = normalizeMrzNumeric(String.valueOf(secondLine.charAt(19)));
+        String expiryRaw = normalizeMrzNumeric(secondLine.substring(21, 27));
+        String expiryCheck = normalizeMrzNumeric(String.valueOf(secondLine.charAt(27)));
+        LocalDate birthDate = parseMrzDate(birthRaw, false);
         if (birthDate != null) {
             fields.put("birthDate", birthDate.toString());
         }
-        LocalDate expiryDate = parseMrzDate(secondLine.substring(21, 27), true);
+        LocalDate expiryDate = parseMrzDate(expiryRaw, true);
         if (expiryDate != null) {
             fields.put("expiryDate", expiryDate.toString());
         }
-        return fields;
+        boolean documentChecksumOk = validCheckDigit(secondLine.substring(0, 9), secondLine.charAt(9));
+        boolean birthChecksumOk = birthCheck.length() == 1 && validCheckDigit(birthRaw, birthCheck.charAt(0));
+        boolean expiryChecksumOk = expiryCheck.length() == 1 && validCheckDigit(expiryRaw, expiryCheck.charAt(0));
+        ChecksumStatus checksumStatus = documentChecksumOk && birthChecksumOk && expiryChecksumOk
+                ? ChecksumStatus.STRICT_OK
+                : fields.containsKey("documentNumber") && fields.containsKey("expiryDate")
+                ? ChecksumStatus.CHECKSUM_FAILED_ACCEPTED
+                : ChecksumStatus.FAILED;
+        return new MrzParseResult(fields, checksumStatus);
+    }
+
+    private boolean looksLikeTd3SecondLine(String line) {
+        return line != null && line.length() >= 28 && TD3_LINE_2_PATTERN.matcher(line).matches();
+    }
+
+    private String normalizeMrzNumeric(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.toUpperCase(Locale.ROOT)
+                .replace('O', '0')
+                .replace('I', '1')
+                .replace('L', '1')
+                .replaceAll("[^0-9]", "");
+    }
+
+    private String rightPad(String value, int length) {
+        if (value.length() >= length) {
+            return value;
+        }
+        return value + "<".repeat(length - value.length());
     }
 
     private boolean validCheckDigit(String value, char checkDigit) {
@@ -554,6 +620,8 @@ public class DocumentAnalysisService {
         putIfPresent(fields, "expiryDate", expiryDate == null ? null : expiryDate.toString());
         putIfPresent(fields, "country", mrzAnalysis.fields().get("country"));
         putIfPresent(fields, "nationality", mrzAnalysis.fields().get("nationality"));
+        putIfPresent(fields, "surname", mrzAnalysis.fields().get("surname"));
+        putIfPresent(fields, "givenNames", mrzAnalysis.fields().get("givenNames"));
         fields.putAll(mrzAnalysis.diagnostics(finalExtractionSource, mrzOcrTextRaw));
         return fields;
     }
@@ -595,8 +663,17 @@ public class DocumentAnalysisService {
             boolean candidateDetected,
             String normalizedText,
             boolean parseSuccess,
+            ChecksumStatus checksumStatus,
             Map<String, String> fields
     ) {
+        private boolean hasRequiredFields() {
+            return parseSuccess;
+        }
+
+        private boolean strictChecksum() {
+            return checksumStatus == ChecksumStatus.STRICT_OK;
+        }
+
         private Map<String, Object> diagnostics(String finalExtractionSource, String mrzOcrTextRaw) {
             Map<String, Object> diagnostics = new LinkedHashMap<>();
             diagnostics.put("mrzCandidateDetected", candidateDetected);
@@ -606,9 +683,19 @@ public class DocumentAnalysisService {
             diagnostics.put("mrzParseSuccess", parseSuccess);
             diagnostics.put("documentNumberExtracted", fields.containsKey("documentNumber"));
             diagnostics.put("expiryDateExtracted", fields.containsKey("expiryDate"));
+            diagnostics.put("checksumStatus", checksumStatus.name());
             diagnostics.put("finalExtractionSource", finalExtractionSource);
             return diagnostics;
         }
+    }
+
+    private record MrzParseResult(Map<String, String> fields, ChecksumStatus checksumStatus) {
+    }
+
+    private enum ChecksumStatus {
+        STRICT_OK,
+        CHECKSUM_FAILED_ACCEPTED,
+        FAILED
     }
 
     public record DocumentAnalysisResult(

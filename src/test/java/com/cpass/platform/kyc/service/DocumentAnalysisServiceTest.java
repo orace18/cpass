@@ -62,7 +62,7 @@ class DocumentAnalysisServiceTest {
     }
 
     @Test
-    void shouldKeepPassportUnreadableWhenMrzCheckDigitsAreInvalid() {
+    void shouldExtractPassportFieldsWhenMrzCheckDigitsAreInvalidButFieldsAreCoherent() {
         DocumentAnalysisService.DocumentAnalysisResult result = service.analyze(
                 KycDocumentType.PASSPORT,
                 """
@@ -73,13 +73,14 @@ class DocumentAnalysisServiceTest {
                         """.formatted(passportMrzLine1(), passportMrzLine2().replace("P1234567<1", "P1234567<0"))
         );
 
-        assertThat(result.validityStatus()).isEqualTo(KycDocumentValidityStatus.UNREADABLE);
-        assertThat(result.documentNumber()).isNull();
-        assertThat(result.expiryDate()).isNull();
+        assertThat(result.validityStatus()).isEqualTo(KycDocumentValidityStatus.VALID);
+        assertThat(result.documentNumber()).isEqualTo("P1234567");
+        assertThat(result.expiryDate()).isEqualTo(LocalDate.parse("2028-01-10"));
         assertThat(result.mrzDiagnostics())
                 .containsEntry("mrzCandidateDetected", true)
-                .containsEntry("mrzParseSuccess", false)
-                .containsEntry("finalExtractionSource", "FALLBACK");
+                .containsEntry("mrzParseSuccess", true)
+                .containsEntry("checksumStatus", "CHECKSUM_FAILED_ACCEPTED")
+                .containsEntry("finalExtractionSource", "MRZ_OCR");
     }
 
     @Test

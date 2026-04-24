@@ -136,18 +136,77 @@ class DocumentAnalysisServiceMrzOcrTest {
     }
 
     @Test
-    void ocrTexteAvecCheckDigitIncorrect_resteUnreadable() {
+    void ocrTexteAvecCheckDigitIncorrect_extraitChampsMaisSignaleChecksumIntermediaire() {
         // Check digit corrompu : position 9 changée de '1' à '0'
         String corruptLine2 = MRZ_LINE_2.replace("P1234567<1", "P1234567<0");
 
         DocumentAnalysisService.DocumentAnalysisResult result =
                 service.analyze(KycDocumentType.PASSPORT, "{}", MRZ_LINE_1 + "\n" + corruptLine2);
 
-        assertThat(result.documentNumber()).isNull();
+        assertThat(result.documentNumber()).isEqualTo("P1234567");
+        assertThat(result.validityStatus()).isEqualTo(KycDocumentValidityStatus.VALID);
         assertThat(result.mrzDiagnostics())
                 .containsEntry("mrzCandidateDetected", true)
-                .containsEntry("mrzParseSuccess", false)
-                .containsEntry("finalExtractionSource", "FALLBACK");
+                .containsEntry("mrzParseSuccess", true)
+                .containsEntry("checksumStatus", "CHECKSUM_FAILED_ACCEPTED")
+                .containsEntry("finalExtractionSource", "MRZ_OCR");
+    }
+
+    @Test
+    void mrzBenReelleAvecNumeroPasseportEtExpiration_parseSuccess() {
+        String line1 = "P<BENHOUESSOU<<ADJIGNON<ELIE<<<<<<<<<<<<<<<";
+        String line2 = "21PP235425BEN7510201M2709053<<<<<<<<<<<<<<";
+
+        DocumentAnalysisService.DocumentAnalysisResult result =
+                service.analyze(KycDocumentType.PASSPORT, "{}", line1 + "\n" + line2);
+
+        assertThat(result.documentNumber()).isEqualTo("21PP23542");
+        assertThat(result.birthDate()).isEqualTo(LocalDate.of(1975, 10, 20));
+        assertThat(result.expiryDate()).isEqualTo(LocalDate.of(2027, 9, 5));
+        assertThat(result.extractedFields())
+                .containsEntry("surname", "HOUESSOU")
+                .containsEntry("givenNames", "ADJIGNON ELIE")
+                .containsEntry("nationality", "BEN");
+        assertThat(result.mrzDiagnostics())
+                .containsEntry("mrzParseSuccess", true)
+                .containsEntry("finalExtractionSource", "MRZ_OCR");
+    }
+
+    @Test
+    void mrzConcateneeAvecTexteParasiteAvantP_parseSuccess() {
+        String raw = "NYNINAHG1OOFTHOA" + MRZ_LINE_1 + MRZ_LINE_2 + "TRAILINGNOISE";
+
+        DocumentAnalysisService.DocumentAnalysisResult result =
+                service.analyze(KycDocumentType.PASSPORT, "{}", raw);
+
+        assertThat(result.documentNumber()).isEqualTo("P1234567");
+        assertThat(result.expiryDate()).isEqualTo(LocalDate.of(2028, 1, 10));
+        assertThat(result.mrzDiagnostics()).containsEntry("mrzParseSuccess", true);
+    }
+
+    @Test
+    void mrzAvecKCommeChevronDansNom_normalisationOk() {
+        String noisyLine1 = MRZ_LINE_1.replace("<<", "KK").replace("<", "K");
+
+        DocumentAnalysisService.DocumentAnalysisResult result =
+                service.analyze(KycDocumentType.PASSPORT, "{}", noisyLine1 + "\n" + MRZ_LINE_2);
+
+        assertThat(result.documentNumber()).isEqualTo("P1234567");
+        assertThat(result.extractedFields()).containsEntry("surname", "DOE");
+    }
+
+    @Test
+    void mrzAvecLettresDansZonesNumeriques_normalisationOk() {
+        String noisyLine2 = MRZ_LINE_2
+                .replace("900520", "9O052O")
+                .replace("280110", "28O11O");
+
+        DocumentAnalysisService.DocumentAnalysisResult result =
+                service.analyze(KycDocumentType.PASSPORT, "{}", MRZ_LINE_1 + "\n" + noisyLine2);
+
+        assertThat(result.birthDate()).isEqualTo(LocalDate.of(1990, 5, 20));
+        assertThat(result.expiryDate()).isEqualTo(LocalDate.of(2028, 1, 10));
+        assertThat(result.mrzDiagnostics()).containsEntry("mrzParseSuccess", true);
     }
 
     // --- Priorité : engine OCR prime sur mrzOcrText dans les metadata ---

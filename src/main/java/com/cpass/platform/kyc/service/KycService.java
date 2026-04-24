@@ -339,7 +339,9 @@ public class KycService {
                     }
                     for (Integer psm : MRZ_OCR_PSMS) {
                         String rawText = variant.processed() ? mrzOcrEngine.extractText(variant.processedBytes(), psm) : null;
-                        int score = mrzCandidateScore(rawText);
+                        DocumentAnalysisService.DocumentAnalysisResult candidateAnalysis =
+                                rawText == null ? null : documentAnalysisService.analyze(documentType, "{}", rawText);
+                        int score = mrzCandidateScore(rawText, candidateAnalysis);
                         log.info("kyc mrz ocr variant cropStrategy={} imageObjectKey={} tesseractPsm={} rawText={} mrzCandidateScore={}",
                                 variant.cropStrategy(),
                                 variantObjectKey,
@@ -727,7 +729,7 @@ public class KycService {
         return objectKey(clientId, referenceId, slot, timestamp, fileName);
     }
 
-    private int mrzCandidateScore(String rawText) {
+    private int mrzCandidateScore(String rawText, DocumentAnalysisService.DocumentAnalysisResult candidateAnalysis) {
         if (rawText == null || rawText.isBlank()) {
             return 0;
         }
@@ -759,6 +761,15 @@ public class KycService {
         }
         if (List.of(lines).stream().anyMatch(line -> line.length() >= 40 && line.length() <= 48)) {
             score += 15;
+        }
+        if (candidateAnalysis != null && candidateAnalysis.documentNumber() != null) {
+            score += 35;
+        }
+        if (candidateAnalysis != null && candidateAnalysis.expiryDate() != null) {
+            score += 45;
+        }
+        if (candidateAnalysis != null && Boolean.TRUE.equals(candidateAnalysis.mrzDiagnostics().get("mrzParseSuccess"))) {
+            score += 60;
         }
         return Math.min(score, 100);
     }
