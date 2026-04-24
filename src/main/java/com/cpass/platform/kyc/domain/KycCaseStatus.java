@@ -9,5 +9,6 @@ public enum KycCaseStatus {
     APPROVED,
     REJECTED,
     REVIEW,
-    RESUBMISSION_REQUIRED
+    RESUBMISSION_REQUIRED,
+    ARCHIVED
 }

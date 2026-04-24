@@ -16,6 +16,8 @@ import com.cpass.platform.kyc.domain.KycLevel;
 import com.cpass.platform.kyc.domain.KycNextAction;
 import com.cpass.platform.kyc.domain.KycReasonCode;
 import com.cpass.platform.kyc.dto.KycCaseResponse;
+import com.cpass.platform.kyc.dto.KycCheckOrInitRequest;
+import com.cpass.platform.kyc.dto.KycCheckOrInitResponse;
 import com.cpass.platform.kyc.dto.KycUploadResponse;
 import com.cpass.platform.kyc.infra.IdentityKycRepository;
 import com.cpass.platform.kyc.infra.IdentityRepository;
@@ -391,6 +393,59 @@ class KycServiceUploadIntegrationTest {
         assertThat(documents).allMatch(document -> document.getKycCase() != null && document.getKycCase().getId().equals(caseId));
         assertThat(documents).allMatch(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID);
         assertBiometricSignals(status, "MATCH", 92);
+    }
+
+    @Test
+    void shouldStartHardResetCaseWithoutCarryingPreviousDocuments() throws Exception {
+        UUID clientId = createClient();
+        KycCheckOrInitRequest request = new KycCheckOrInitRequest(
+                "user_123",
+                "Grace Doe",
+                java.time.LocalDate.of(1990, 5, 20),
+                "+22962000000",
+                "P1234567",
+                null,
+                null,
+                true
+        );
+
+        KycCheckOrInitResponse firstInit = kycService.checkOrInit(clientId, KycLevel.LEVEL_1, request);
+        KycUploadResponse firstUpload = kycService.upload(
+                clientId,
+                firstInit.kycCaseId(),
+                KycDocumentType.PASSPORT,
+                file("old-passport.jpg"),
+                "{\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+
+        KycCheckOrInitResponse resetInit = kycService.checkOrInit(clientId, KycLevel.LEVEL_1, request);
+        KycCaseEntity archivedCase = kycCaseRepository.findById(firstInit.kycCaseId()).orElseThrow();
+        KycCaseEntity newCase = kycCaseRepository.findById(resetInit.kycCaseId()).orElseThrow();
+
+        assertThat(resetInit.kycCaseId()).isNotEqualTo(firstInit.kycCaseId());
+        assertThat(archivedCase.getStatus()).isEqualTo(KycCaseStatus.ARCHIVED);
+        assertThat(identityKycRepository.findByKycCase(archivedCase).orElseThrow().getStatus()).isEqualTo(KycCaseStatus.ARCHIVED);
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(archivedCase))
+                .extracting(KycDocumentEntity::getId)
+                .containsExactly(firstUpload.documentId());
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(newCase)).isEmpty();
+
+        kycService.getCase(clientId, resetInit.kycCaseId());
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(newCase)).isEmpty();
+
+        KycUploadResponse secondUpload = kycService.upload(
+                clientId,
+                resetInit.kycCaseId(),
+                KycDocumentType.PASSPORT,
+                file("new-passport.jpg"),
+                "{\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(newCase))
+                .extracting(KycDocumentEntity::getId)
+                .containsExactly(secondUpload.documentId());
+        assertThat(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(archivedCase))
+                .extracting(KycDocumentEntity::getId)
+                .containsExactly(firstUpload.documentId());
     }
 
     @Test

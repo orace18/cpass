@@ -58,6 +58,15 @@ public class KycService {
     private static final Logger log = LoggerFactory.getLogger(KycService.class);
     private static final int MIN_MRZ_CANDIDATE_SCORE = 60;
     private static final List<Integer> MRZ_OCR_PSMS = List.of(6, 7);
+    private static final List<KycCaseStatus> RESET_ARCHIVABLE_STATUSES = List.of(
+            KycCaseStatus.INITIATED,
+            KycCaseStatus.CONTACT_VERIFIED,
+            KycCaseStatus.IDENTITY_PRECHECKED,
+            KycCaseStatus.FIELD_VERIFIED,
+            KycCaseStatus.SOCIAL_VALIDATED,
+            KycCaseStatus.REVIEW,
+            KycCaseStatus.RESUBMISSION_REQUIRED
+    );
 
     private final S3Client s3Client;
     private final KycDocumentRepository kycDocumentRepository;
@@ -121,6 +130,9 @@ public class KycService {
                 .orElseGet(() -> identityRepository.save(newIdentity(request)));
 
         ReuseDecision reuseDecision = evaluateReuse(identity, requiredLevel);
+        if (reuseDecision.status() != KycReuseStatus.REUSED) {
+            archivePreviousActiveCases(clientId, identity);
+        }
         KycCaseEntity kycCase = createCase(clientId, identity, request.userId(), requiredLevel, reuseDecision, request);
         identityKycRepository.save(createMapping(identity, kycCase));
         log.info("kyc case initialized requestId={} clientId={} caseId={} userId={} level={} reuseStatus={} status={}",
@@ -851,6 +863,32 @@ public class KycService {
             return identityRepository.findFirstByPhoneNumberOrderByCreatedAtDesc(phoneNumber);
         }
         return Optional.empty();
+    }
+
+    private void archivePreviousActiveCases(UUID clientId, IdentityEntity identity) {
+        List<KycCaseEntity> activeCases = kycCaseRepository
+                .findByIdentityAndClientIdAndStatusInOrderByCreatedAtDesc(identity, clientId, RESET_ARCHIVABLE_STATUSES);
+        if (activeCases.isEmpty()) {
+            return;
+        }
+
+        activeCases.forEach(kycCase -> {
+            kycCase.setStatus(KycCaseStatus.ARCHIVED);
+            kycCase.setStatusReason("Archived by KYC reset.");
+            kycCase.setValidUntil(null);
+            kycCase.setLastProcessedAt(Instant.now());
+            identityKycRepository.findByKycCase(kycCase).ifPresent(mapping -> {
+                mapping.setStatus(KycCaseStatus.ARCHIVED);
+                mapping.setValidUntil(null);
+                identityKycRepository.save(mapping);
+            });
+        });
+        kycCaseRepository.saveAll(activeCases);
+        log.info("kyc reset archived previous active cases requestId={} clientId={} identityId={} archivedCaseIds={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                identity.getId(),
+                activeCases.stream().map(KycCaseEntity::getId).toList());
     }
 
     private IdentityEntity newIdentity(KycCheckOrInitRequest request) {
