@@ -3,6 +3,13 @@ ARG WORK_DIRECTORY=/home/cpass
 ARG APP_NAME=internal-cpaas.jar
 ARG APP_LINK=internal-cpaas-1.0.0.jar
 ARG APP_PORT=8080
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       tesseract-ocr \
+       tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV ENV_APP_NAME=${APP_NAME}
 ENV JAVA_OPTS='-Xmx512m -Xms256m'
 WORKDIR ${WORK_DIRECTORY}

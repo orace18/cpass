@@ -22,12 +22,24 @@ public class MrzOcrEngineConfig {
             log.info("kyc mrz ocr engine=disabled forced via config");
             return new DisabledMrzOcrEngine();
         }
+        if ("tesseract".equalsIgnoreCase(engineMode)) {
+            String binary = detectTesseractBinary();
+            if (binary == null) {
+                throw new IllegalStateException(
+                        "app.kyc.ocr.engine=tesseract but no Tesseract binary found. " +
+                        "Install tesseract-ocr (apt-get install tesseract-ocr tesseract-ocr-eng) " +
+                        "or set KYC_OCR_ENGINE=auto to fall back silently.");
+            }
+            log.info("kyc mrz ocr engine=tesseract binary={}", binary);
+            return new TesseractMrzOcrEngine(binary);
+        }
+        // mode auto : détection opportuniste, fallback silencieux si absent
         String binary = detectTesseractBinary();
         if (binary != null) {
             log.info("kyc mrz ocr engine=tesseract binary={}", binary);
             return new TesseractMrzOcrEngine(binary);
         }
-        log.warn("kyc mrz ocr engine=disabled tesseract binary not found; mrz text extraction unavailable — install tesseract or set app.kyc.ocr.engine=disabled to suppress this warning");
+        log.warn("kyc mrz ocr engine=disabled tesseract binary not found; mrz text extraction unavailable — install tesseract-ocr or set KYC_OCR_ENGINE=tesseract to échouer au démarrage");
         return new DisabledMrzOcrEngine();
     }
 
