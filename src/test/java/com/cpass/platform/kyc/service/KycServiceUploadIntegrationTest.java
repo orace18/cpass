@@ -26,6 +26,7 @@ import com.cpass.platform.user.domain.UserRole;
 import com.cpass.platform.user.infra.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -39,6 +40,11 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +55,7 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -136,6 +143,39 @@ class KycServiceUploadIntegrationTest {
         assertThat(document.getObjectKey()).contains(kycCase.getReferenceId());
         assertThat(linkedDocuments).extracting(KycDocumentEntity::getId).contains(response.documentId());
         assertThat(kycCase.getMetadataJson()).contains("\"identityDocumentId\":\"" + response.documentId() + "\"");
+    }
+
+    @Test
+    void shouldConserveOriginalAndUseOcrReadyObjectForReadableImageUpload() throws Exception {
+        UUID clientId = createClient();
+        UUID caseId = createCase(
+                clientId,
+                "{\"contactVerified\":true,\"fullName\":\"Grace Doe\",\"birthDate\":\"1990-05-20\",\"documentNumber\":\"P1234567\"}",
+                "P1234567",
+                null
+        );
+
+        KycUploadResponse response = kycService.upload(
+                clientId,
+                caseId,
+                KycDocumentType.PASSPORT,
+                imageFile("passport.jpg", 1000, 650, new Color(210, 210, 210)),
+                "{\"accountHolderId\":\"acc_1\",\"fullName\":\"DOE GRACE\",\"birthDate\":\"1990-05-20\",\"expiryDate\":\"2028-01-10\",\"documentNumber\":\"P1234567\"}"
+        );
+
+        KycDocumentEntity saved = kycDocumentRepository.findById(response.documentId()).orElseThrow();
+        ArgumentCaptor<PutObjectRequest> putCaptor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client, times(2)).putObject(putCaptor.capture(), any(RequestBody.class));
+
+        assertThat(saved.getObjectKey()).contains("/ocr-ready/");
+        assertThat(saved.getMetadataJson()).contains("\"imageProcessing\"");
+        assertThat(saved.getMetadataJson()).contains("\"originalObjectKey\"");
+        assertThat(saved.getMetadataJson()).contains("\"finalObjectKey\":\"" + saved.getObjectKey() + "\"");
+        assertThat(saved.getMetadataJson()).contains("\"originalWidth\":1000");
+        assertThat(saved.getMetadataJson()).contains("\"processedWidth\":1000");
+        assertThat(putCaptor.getAllValues()).extracting(PutObjectRequest::key)
+                .anyMatch(key -> key.contains("/original/"))
+                .anyMatch(key -> key.contains("/ocr-ready/"));
     }
 
     @Test
@@ -986,6 +1026,19 @@ class KycServiceUploadIntegrationTest {
                 "image/jpeg",
                 "abc".getBytes(StandardCharsets.UTF_8)
         );
+    }
+
+    private MockMultipartFile imageFile(String fileName, int width, int height, Color color) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(color);
+        graphics.fillRect(0, 0, width, height);
+        graphics.setColor(Color.BLACK);
+        graphics.drawString("CPASS KYC TEST 123456789", 20, height / 2);
+        graphics.dispose();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(image, "jpg", output);
+        return new MockMultipartFile("file", fileName, "image/jpeg", output.toByteArray());
     }
 
     private MockMultipartFile filePart(String partName, String fileName) {

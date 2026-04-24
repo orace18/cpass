@@ -65,6 +65,7 @@ public class KycService {
     private final OtpService otpService;
     private final DocumentAnalysisService documentAnalysisService;
     private final SelfieAnalysisService selfieAnalysisService;
+    private final KycImageProcessingService imageProcessingService;
     private final KycWorkflowPublisher workflowPublisher;
     private final KycFlowService kycFlowService;
     private final KycFlowProperties kycFlowProperties;
@@ -80,6 +81,7 @@ public class KycService {
                       OtpService otpService,
                       DocumentAnalysisService documentAnalysisService,
                       SelfieAnalysisService selfieAnalysisService,
+                      KycImageProcessingService imageProcessingService,
                       KycWorkflowPublisher workflowPublisher,
                       KycFlowService kycFlowService,
                       KycFlowProperties kycFlowProperties,
@@ -94,6 +96,7 @@ public class KycService {
         this.otpService = otpService;
         this.documentAnalysisService = documentAnalysisService;
         this.selfieAnalysisService = selfieAnalysisService;
+        this.imageProcessingService = imageProcessingService;
         this.workflowPublisher = workflowPublisher;
         this.kycFlowService = kycFlowService;
         this.kycFlowProperties = kycFlowProperties;
@@ -291,35 +294,36 @@ public class KycService {
                         resolvedFileName);
             }
 
-            String objectKey = clientId + "/" + kycCase.getReferenceId() + "/" + Instant.now().toEpochMilli() + "-" + resolvedFileName;
-            PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-                    .bucket(bucketName)
-                    .key(objectKey)
-                    .contentType(mimeType)
-                    .build();
-            log.info("kyc upload storage start provider=S3 endpoint={} bucket={} objectKey={} contentType={} size={}",
-                    s3Endpoint,
-                    bucketName,
-                    objectKey,
-                    mimeType,
-                    fileBytes.length);
-            try {
-                s3Client.putObject(putObjectRequest, RequestBody.fromBytes(fileBytes));
-            } catch (Exception storageException) {
-                log.error("kyc upload storage failed provider=S3 endpoint={} bucket={} objectKey={} errorType={} errorMessage={}",
-                        s3Endpoint,
-                        bucketName,
-                        objectKey,
-                        storageException.getClass().getName(),
-                        storageException.getMessage(),
-                        storageException);
-                throw storageException;
+            KycImageProcessingService.ImageProcessingResult imageProcessing =
+                    imageProcessingService.prepareOcrReady(fileBytes, mimeType);
+
+            long timestamp = Instant.now().toEpochMilli();
+            String originalObjectKey = objectKey(clientId, kycCase.getReferenceId(), "original", timestamp, resolvedFileName);
+            uploadToS3(originalObjectKey, fileBytes, mimeType);
+
+            String objectKey = originalObjectKey;
+            byte[] finalBytes = fileBytes;
+            String finalMimeType = mimeType;
+            if (imageProcessing.processed()) {
+                objectKey = objectKey(clientId, kycCase.getReferenceId(), "ocr-ready", timestamp, resolvedFileName);
+                finalBytes = imageProcessing.processedBytes();
+                finalMimeType = imageProcessing.processedMimeType();
+                uploadToS3(objectKey, finalBytes, finalMimeType);
             }
-            log.info("kyc upload storage success provider=S3 endpoint={} bucket={} objectKey={} bytesWritten={}",
-                    s3Endpoint,
-                    bucketName,
-                    objectKey,
-                    fileBytes.length);
+
+            log.info("kyc image technical accountHolderId={} documentSlot={} originalWidth={} originalHeight={} originalSizeBytes={} processedWidth={} processedHeight={} processedSizeBytes={} mimeType={} compressionQuality={} transformationsApplied={} finalObjectKey={}",
+                    accountHolderId(kycCase, metadataJson),
+                    documentType,
+                    imageProcessing.originalWidth(),
+                    imageProcessing.originalHeight(),
+                    imageProcessing.originalSizeBytes(),
+                    imageProcessing.processedWidth(),
+                    imageProcessing.processedHeight(),
+                    imageProcessing.processedSizeBytes(),
+                    finalMimeType,
+                    imageProcessing.compressionQuality(),
+                    imageProcessing.transformationsApplied(),
+                    objectKey);
 
             boolean selfieUpload = documentType == KycDocumentType.SELFIE;
             DocumentAnalysisService.DocumentAnalysisResult analysis = null;
@@ -329,9 +333,9 @@ public class KycService {
                 log.info("kyc upload selfie analysis documentType={} mappedProviderType={} fileBytes={} fileName={} mimeType={} validityStatus={} faceDetectedOnSelfie={} selfieQuality={} faceDetectedOnDocument={} faceMatchScore={} faceDecision={} confidenceScore={}",
                         documentType,
                         mappedProviderType,
-                        fileBytes.length,
+                        finalBytes.length,
                         resolvedFileName,
-                        mimeType,
+                        finalMimeType,
                         selfieAnalysis.validityStatus(),
                         selfieAnalysis.faceDetectedOnSelfie(),
                         selfieAnalysis.selfieQuality(),
@@ -346,9 +350,9 @@ public class KycService {
                         analysis.detectedDocumentType(),
                         analysis.supportedDocumentType(),
                         mappedProviderType,
-                        fileBytes.length,
+                        finalBytes.length,
                         resolvedFileName,
-                        mimeType,
+                        finalMimeType,
                         analysis.validityStatus(),
                         analysis.documentNumber() != null,
                         analysis.expiryDate(),
@@ -362,16 +366,16 @@ public class KycService {
             document.setFileName(resolvedFileName);
             document.setObjectKey(objectKey);
             document.setBucketName(bucketName);
-            document.setContentType(mimeType);
-            document.setSizeBytes(fileBytes.length);
+            document.setContentType(finalMimeType);
+            document.setSizeBytes(finalBytes.length);
             document.setStatus(KycDocumentStatus.PENDING);
             if (selfieUpload) {
-                document.setMetadataJson(enrichedSelfieMetadata(metadataJson, selfieAnalysis));
+                document.setMetadataJson(enrichedSelfieMetadata(metadataJson, selfieAnalysis, imageProcessing, originalObjectKey, objectKey));
                 document.setDocumentNumber(null);
                 document.setExpiryDate(null);
                 document.setValidityStatus(selfieAnalysis.validityStatus());
             } else {
-                document.setMetadataJson(enrichedDocumentMetadata(metadataJson, analysis));
+                document.setMetadataJson(enrichedDocumentMetadata(metadataJson, analysis, imageProcessing, originalObjectKey, objectKey));
                 document.setDocumentNumber(analysis.documentNumber());
                 document.setExpiryDate(analysis.expiryDate());
                 document.setValidityStatus(analysis.validityStatus());
@@ -566,21 +570,95 @@ public class KycService {
         return summary;
     }
 
-    private String enrichedDocumentMetadata(String metadataJson, DocumentAnalysisService.DocumentAnalysisResult analysis) {
+    private String enrichedDocumentMetadata(String metadataJson,
+                                            DocumentAnalysisService.DocumentAnalysisResult analysis,
+                                            KycImageProcessingService.ImageProcessingResult imageProcessing,
+                                            String originalObjectKey,
+                                            String finalObjectKey) {
         Map<String, Object> metadata = new HashMap<>(documentAnalysisService.parse(metadataJson));
         metadata.put("detectedDocumentType", analysis.detectedDocumentType() == null ? null : analysis.detectedDocumentType().name());
         metadata.put("supportedDocumentType", analysis.supportedDocumentType());
         metadata.put("extractedFields", analysis.extractedFields());
         metadata.put("confidenceScore", analysis.confidenceScore());
+        metadata.put("imageProcessing", imageProcessingMetadata(imageProcessing, originalObjectKey, finalObjectKey));
         return kycFlowService.writeMetadata(metadata);
     }
 
-    private String enrichedSelfieMetadata(String metadataJson, SelfieAnalysisService.SelfieAnalysisResult analysis) {
+    private String enrichedSelfieMetadata(String metadataJson,
+                                          SelfieAnalysisService.SelfieAnalysisResult analysis,
+                                          KycImageProcessingService.ImageProcessingResult imageProcessing,
+                                          String originalObjectKey,
+                                          String finalObjectKey) {
         Map<String, Object> metadata = new HashMap<>(documentAnalysisService.parse(metadataJson));
         metadata.putAll(analysis.biometricSignals());
         metadata.put("extractedFields", analysis.biometricSignals());
         metadata.put("confidenceScore", analysis.biometricConfidenceScore());
+        metadata.put("imageProcessing", imageProcessingMetadata(imageProcessing, originalObjectKey, finalObjectKey));
         return kycFlowService.writeMetadata(metadata);
+    }
+
+    private Map<String, Object> imageProcessingMetadata(KycImageProcessingService.ImageProcessingResult imageProcessing,
+                                                        String originalObjectKey,
+                                                        String finalObjectKey) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("originalObjectKey", originalObjectKey);
+        metadata.put("finalObjectKey", finalObjectKey);
+        metadata.put("originalWidth", imageProcessing.originalWidth());
+        metadata.put("originalHeight", imageProcessing.originalHeight());
+        metadata.put("originalSizeBytes", imageProcessing.originalSizeBytes());
+        metadata.put("processedWidth", imageProcessing.processedWidth());
+        metadata.put("processedHeight", imageProcessing.processedHeight());
+        metadata.put("processedSizeBytes", imageProcessing.processedSizeBytes());
+        metadata.put("mimeType", imageProcessing.mimeType());
+        metadata.put("compressionQuality", imageProcessing.compressionQuality());
+        metadata.put("transformationsApplied", imageProcessing.transformationsApplied());
+        return metadata;
+    }
+
+    private String objectKey(UUID clientId, String referenceId, String slot, long timestamp, String fileName) {
+        return clientId + "/" + referenceId + "/" + slot + "/" + timestamp + "-" + fileName;
+    }
+
+    private void uploadToS3(String objectKey, byte[] bytes, String contentType) {
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(bucketName)
+                .key(objectKey)
+                .contentType(contentType)
+                .build();
+        log.info("kyc upload storage start provider=S3 endpoint={} bucket={} objectKey={} contentType={} size={}",
+                s3Endpoint,
+                bucketName,
+                objectKey,
+                contentType,
+                bytes.length);
+        try {
+            s3Client.putObject(putObjectRequest, RequestBody.fromBytes(bytes));
+        } catch (Exception storageException) {
+            log.error("kyc upload storage failed provider=S3 endpoint={} bucket={} objectKey={} errorType={} errorMessage={}",
+                    s3Endpoint,
+                    bucketName,
+                    objectKey,
+                    storageException.getClass().getName(),
+                    storageException.getMessage(),
+                    storageException);
+            throw storageException;
+        }
+        log.info("kyc upload storage success provider=S3 endpoint={} bucket={} objectKey={} bytesWritten={}",
+                s3Endpoint,
+                bucketName,
+                objectKey,
+                bytes.length);
+    }
+
+    private String accountHolderId(KycCaseEntity kycCase, String metadataJson) {
+        Object accountHolderId = documentAnalysisService.parse(metadataJson).get("accountHolderId");
+        if (accountHolderId != null && !String.valueOf(accountHolderId).isBlank()) {
+            return String.valueOf(accountHolderId);
+        }
+        if (kycCase.getUserId() != null && !kycCase.getUserId().isBlank()) {
+            return kycCase.getUserId();
+        }
+        return kycCase.getIdentity() == null ? null : String.valueOf(kycCase.getIdentity().getId());
     }
 
     private Optional<IdentityEntity> findIdentity(String documentNumber, String phoneNumber) {
