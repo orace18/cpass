@@ -90,11 +90,28 @@ class KycImageProcessingServiceTest {
                 service.prepareMrzReady(jpeg, MediaType.IMAGE_JPEG_VALUE);
 
         assertThat(result.processed()).isTrue();
+        assertThat(result.cropStrategy()).isEqualTo("bottom_42");
         assertThat(result.cropCoordinates()).isEqualTo("0,406,1000,294");
         assertThat(result.processedMimeType()).isEqualTo(MediaType.IMAGE_JPEG_VALUE);
         assertThat(result.processedBytes()).isNotEmpty();
         assertThat(result.transformationsApplied())
-                .contains("mrz_crop_bottom_42_percent", "mrz_upscale_x3", "mrz_grayscale", "mrz_contrast_strong", "mrz_threshold_adaptive", "mrz_sharpen_ocr");
+                .contains("mrz_crop_bottom_42_percent", "mrz_upscale_x2", "mrz_grayscale", "mrz_no_threshold", "mrz_no_strong_contrast", "mrz_no_aggressive_sharpen");
+    }
+
+    @Test
+    void shouldPrepareMultipleVisualInspectionMrzVariants() throws Exception {
+        byte[] jpeg = passportLikeJpeg(1000, 700);
+
+        var variants = service.prepareMrzInspectionVariants(jpeg, MediaType.IMAGE_JPEG_VALUE, null);
+
+        assertThat(variants)
+                .extracting(KycImageProcessingService.MrzImageProcessingResult::cropStrategy)
+                .containsExactly("bottom_25", "bottom_30", "bottom_35", "bottom_42");
+        assertThat(variants)
+                .allMatch(KycImageProcessingService.MrzImageProcessingResult::processed)
+                .allMatch(variant -> variant.transformationsApplied().contains("mrz_no_threshold"))
+                .allMatch(variant -> variant.transformationsApplied().contains("mrz_no_strong_contrast"))
+                .allMatch(variant -> variant.transformationsApplied().contains("mrz_no_aggressive_sharpen"));
     }
 
     private byte[] jpeg(int width, int height, Color color) throws Exception {

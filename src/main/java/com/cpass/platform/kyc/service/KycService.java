@@ -56,6 +56,8 @@ import java.util.UUID;
 public class KycService {
 
     private static final Logger log = LoggerFactory.getLogger(KycService.class);
+    private static final int MIN_MRZ_CANDIDATE_SCORE = 60;
+    private static final List<Integer> MRZ_OCR_PSMS = List.of(6, 7);
 
     private final S3Client s3Client;
     private final KycDocumentRepository kycDocumentRepository;
@@ -323,12 +325,41 @@ public class KycService {
             String mrzObjectKey = null;
             String mrzOcrText = null;
             if (!selfieUpload) {
-                mrzImageProcessing = imageProcessingService.prepareMrzReady(fileBytes, mimeType);
-                if (mrzImageProcessing.processed()) {
-                    mrzObjectKey = objectKey(clientId, kycCase.getReferenceId(), "ocr-mrz-ready", timestamp, resolvedFileName);
-                    uploadToS3(mrzObjectKey, mrzImageProcessing.processedBytes(), mrzImageProcessing.processedMimeType());
-                    mrzOcrText = mrzOcrEngine.extractText(mrzImageProcessing.processedBytes());
+                List<KycImageProcessingService.MrzImageProcessingResult> mrzVariants =
+                        imageProcessingService.prepareMrzInspectionVariants(fileBytes, mimeType, imageProcessing);
+                MrzOcrCandidate bestCandidate = null;
+                for (KycImageProcessingService.MrzImageProcessingResult variant : mrzVariants) {
+                    String variantObjectKey = objectKeyForMrzVariant(clientId, kycCase.getReferenceId(), variant.cropStrategy(), timestamp, resolvedFileName, objectKey);
+                    if (variant.processed() && !"full_ocr_ready".equals(variant.cropStrategy())) {
+                        uploadToS3(variantObjectKey, variant.processedBytes(), variant.processedMimeType());
+                    }
+                    if ("bottom_42".equals(variant.cropStrategy())) {
+                        mrzImageProcessing = variant;
+                        mrzObjectKey = variantObjectKey;
+                    }
+                    for (Integer psm : MRZ_OCR_PSMS) {
+                        String rawText = variant.processed() ? mrzOcrEngine.extractText(variant.processedBytes(), psm) : null;
+                        int score = mrzCandidateScore(rawText);
+                        log.info("kyc mrz ocr variant cropStrategy={} imageObjectKey={} tesseractPsm={} rawText={} mrzCandidateScore={}",
+                                variant.cropStrategy(),
+                                variantObjectKey,
+                                psm,
+                                abbreviateForLog(rawText),
+                                score);
+                        if (score >= MIN_MRZ_CANDIDATE_SCORE
+                                && (bestCandidate == null || score > bestCandidate.score())) {
+                            bestCandidate = new MrzOcrCandidate(rawText, score, psm, variant.cropStrategy(), variantObjectKey);
+                        }
+                    }
                 }
+                mrzOcrText = bestCandidate == null ? null : bestCandidate.rawText();
+                if (mrzImageProcessing == null) {
+                    mrzImageProcessing = imageProcessingService.prepareMrzReady(fileBytes, mimeType);
+                }
+                log.info("kyc ocr debug images originalObjectKey={} ocrReadyObjectKey={} ocrMrzReadyObjectKey={}",
+                        originalObjectKey,
+                        objectKey,
+                        mrzObjectKey);
                 log.info("kyc mrz image technical accountHolderId={} documentSlot={} mrzCandidateDetected={} mrzCropCoordinates={} transformationsApplied={} mrzObjectKey={} processedSizeBytes={}",
                         accountHolderId(kycCase, metadataJson),
                         documentType,
@@ -337,11 +368,15 @@ public class KycService {
                         mrzImageProcessing.transformationsApplied(),
                         mrzObjectKey,
                         mrzImageProcessing.processedBytes().length);
-                log.info("kyc mrz ocr ocrEngine={} ocrExecuted={} mrzOcrTextRawPresent={} bytesScanned={}",
+                log.info("kyc mrz ocr ocrEngine={} ocrExecuted={} mrzOcrTextRawPresent={} bytesScanned={} selectedCropStrategy={} selectedImageObjectKey={} selectedPsm={} selectedMrzCandidateScore={}",
                         mrzOcrEngine.engineName(),
                         mrzImageProcessing.processed(),
                         mrzOcrText != null && !mrzOcrText.isBlank(),
-                        mrzImageProcessing.processed() ? mrzImageProcessing.processedBytes().length : 0);
+                        mrzImageProcessing.processed() ? mrzImageProcessing.processedBytes().length : 0,
+                        bestCandidate == null ? null : bestCandidate.cropStrategy(),
+                        bestCandidate == null ? null : bestCandidate.imageObjectKey(),
+                        bestCandidate == null ? null : bestCandidate.psm(),
+                        bestCandidate == null ? 0 : bestCandidate.score());
             }
 
             log.info("kyc image technical accountHolderId={} documentSlot={} originalWidth={} originalHeight={} originalSizeBytes={} processedWidth={} processedHeight={} processedSizeBytes={} mimeType={} compressionQuality={} transformationsApplied={} finalObjectKey={}",
@@ -664,6 +699,7 @@ public class KycService {
                                                            String mrzObjectKey) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("processed", mrzImageProcessing.processed());
+        metadata.put("cropStrategy", mrzImageProcessing.cropStrategy());
         metadata.put("objectKey", mrzObjectKey);
         metadata.put("cropCoordinates", mrzImageProcessing.cropCoordinates());
         metadata.put("cropX", mrzImageProcessing.cropX());
@@ -674,6 +710,77 @@ public class KycService {
         metadata.put("processedMimeType", mrzImageProcessing.processedMimeType());
         metadata.put("transformationsApplied", mrzImageProcessing.transformationsApplied());
         return metadata;
+    }
+
+    private String objectKeyForMrzVariant(UUID clientId,
+                                          String referenceId,
+                                          String cropStrategy,
+                                          long timestamp,
+                                          String fileName,
+                                          String ocrReadyObjectKey) {
+        if ("full_ocr_ready".equals(cropStrategy)) {
+            return ocrReadyObjectKey;
+        }
+        String slot = "bottom_42".equals(cropStrategy)
+                ? "ocr-mrz-ready"
+                : "ocr-mrz-debug-" + cropStrategy.replace('_', '-');
+        return objectKey(clientId, referenceId, slot, timestamp, fileName);
+    }
+
+    private int mrzCandidateScore(String rawText) {
+        if (rawText == null || rawText.isBlank()) {
+            return 0;
+        }
+        String normalized = rawText.toUpperCase(Locale.ROOT)
+                .replace('«', '<')
+                .replace('‹', '<')
+                .replaceAll("[\\t ]+", "")
+                .replaceAll("[^A-Z0-9<\\n\\r]", "");
+        String[] lines = normalized.lines()
+                .map(String::trim)
+                .filter(line -> !line.isBlank())
+                .toArray(String[]::new);
+        int score = 0;
+        if (normalized.contains("<")) {
+            score += 15;
+        }
+        if (normalized.contains("P<")) {
+            score += 25;
+        }
+        long mrzLikeLines = List.of(lines).stream()
+                .filter(line -> line.length() >= 30)
+                .filter(line -> mrzCharacterRatio(line) >= 0.85)
+                .count();
+        if (mrzLikeLines >= 1) {
+            score += 20;
+        }
+        if (mrzLikeLines >= 2) {
+            score += 25;
+        }
+        if (List.of(lines).stream().anyMatch(line -> line.length() >= 40 && line.length() <= 48)) {
+            score += 15;
+        }
+        return Math.min(score, 100);
+    }
+
+    private double mrzCharacterRatio(String line) {
+        if (line == null || line.isBlank()) {
+            return 0;
+        }
+        long allowed = line.chars()
+                .filter(value -> (value >= 'A' && value <= 'Z')
+                        || (value >= '0' && value <= '9')
+                        || value == '<')
+                .count();
+        return (double) allowed / line.length();
+    }
+
+    private String abbreviateForLog(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String compact = value.replaceAll("\\s+", " ").trim();
+        return compact.length() <= 220 ? compact : compact.substring(0, 220) + "...";
     }
 
     private String objectKey(UUID clientId, String referenceId, String slot, long timestamp, String fileName) {
@@ -1309,6 +1416,15 @@ public class KycService {
     }
 
     private record ReuseDecision(KycReuseStatus status, KycCaseEntity sourceCase) {
+    }
+
+    private record MrzOcrCandidate(
+            String rawText,
+            int score,
+            int psm,
+            String cropStrategy,
+            String imageObjectKey
+    ) {
     }
 
     private record DecisionFields(String statusReason,

@@ -9,4 +9,8 @@ public interface MrzOcrEngine {
      * Returns null when the engine is unavailable or produces no output.
      */
     String extractText(byte[] mrzImageBytes);
+
+    default String extractText(byte[] mrzImageBytes, int pageSegmentationMode) {
+        return extractText(mrzImageBytes);
+    }
 }

@@ -399,9 +399,9 @@ public class DocumentAnalysisService {
             return "";
         }
         return line.toUpperCase(Locale.ROOT)
-                .replace(' ', '<')
                 .replace('«', '<')
                 .replace('‹', '<')
+                .replaceAll("\\s+", "")
                 .replaceAll("[^A-Z0-9<]", "");
     }
 

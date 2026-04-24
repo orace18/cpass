@@ -28,6 +28,11 @@ public class TesseractMrzOcrEngine implements MrzOcrEngine {
 
     @Override
     public String extractText(byte[] mrzImageBytes) {
+        return extractText(mrzImageBytes, 6);
+    }
+
+    @Override
+    public String extractText(byte[] mrzImageBytes, int pageSegmentationMode) {
         if (mrzImageBytes == null || mrzImageBytes.length == 0) {
             return null;
         }
@@ -40,7 +45,7 @@ public class TesseractMrzOcrEngine implements MrzOcrEngine {
                     tesseractBinary,
                     tempInput.toAbsolutePath().toString(),
                     "stdout",
-                    "--psm", "6",
+                    "--psm", String.valueOf(pageSegmentationMode),
                     "-l", "eng",
                     "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
             ));
@@ -52,17 +57,17 @@ public class TesseractMrzOcrEngine implements MrzOcrEngine {
 
             if (!finished) {
                 process.destroyForcibly();
-                log.warn("kyc mrz ocr engine=tesseract timeout after {}s bytes={}", TIMEOUT_SECONDS, mrzImageBytes.length);
+                log.warn("kyc mrz ocr engine=tesseract timeout after {}s bytes={} psm={}", TIMEOUT_SECONDS, mrzImageBytes.length, pageSegmentationMode);
                 return null;
             }
             if (process.exitValue() != 0) {
-                log.warn("kyc mrz ocr engine=tesseract exit={} bytes={}", process.exitValue(), mrzImageBytes.length);
+                log.warn("kyc mrz ocr engine=tesseract exit={} bytes={} psm={}", process.exitValue(), mrzImageBytes.length, pageSegmentationMode);
                 return null;
             }
 
             String cleaned = output.trim();
             if (cleaned.isBlank()) {
-                log.debug("kyc mrz ocr engine=tesseract output empty bytes={}", mrzImageBytes.length);
+                log.debug("kyc mrz ocr engine=tesseract output empty bytes={} psm={}", mrzImageBytes.length, pageSegmentationMode);
                 return null;
             }
             return cleaned;
@@ -71,7 +76,7 @@ public class TesseractMrzOcrEngine implements MrzOcrEngine {
             if (exception instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            log.warn("kyc mrz ocr engine=tesseract error={} bytes={}", exception.getMessage(), mrzImageBytes.length);
+            log.warn("kyc mrz ocr engine=tesseract error={} bytes={} psm={}", exception.getMessage(), mrzImageBytes.length, pageSegmentationMode);
             return null;
         } finally {
             if (tempInput != null) {

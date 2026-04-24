@@ -87,56 +87,92 @@ public class KycImageProcessingService {
     }
 
     public MrzImageProcessingResult prepareMrzReady(byte[] originalBytes, String mimeType) {
+        List<MrzImageProcessingResult> variants = prepareMrzInspectionVariants(originalBytes, mimeType, null);
+        return variants.stream()
+                .filter(variant -> "bottom_42".equals(variant.cropStrategy()))
+                .findFirst()
+                .orElseGet(() -> new MrzImageProcessingResult(false, "bottom_42", null, null, null, null, List.of("mrz_skipped_variant_missing"), new byte[0], normalizeMimeType(mimeType)));
+    }
+
+    public List<MrzImageProcessingResult> prepareMrzInspectionVariants(byte[] originalBytes,
+                                                                       String mimeType,
+                                                                       ImageProcessingResult ocrReadyImage) {
         String normalizedMimeType = normalizeMimeType(mimeType);
-        List<String> transformations = new ArrayList<>();
         if (!isProcessableImage(normalizedMimeType) || originalBytes == null || originalBytes.length == 0) {
+            List<String> transformations = new ArrayList<>();
             transformations.add("mrz_skipped_unprocessable");
-            return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
+            return List.of(new MrzImageProcessingResult(false, "bottom_42", null, null, null, null, transformations, new byte[0], normalizedMimeType));
         }
 
         try {
             BufferedImage image = ImageIO.read(new ByteArrayInputStream(originalBytes));
             if (image == null) {
+                List<String> transformations = new ArrayList<>();
                 transformations.add("mrz_skipped_decode_failed");
-                return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
+                return List.of(new MrzImageProcessingResult(false, "bottom_42", null, null, null, null, transformations, new byte[0], normalizedMimeType));
             }
 
-            BufferedImage oriented = applyExifOrientation(image, readExifOrientation(originalBytes), transformations);
-            BufferedImage normalized = resizeIfNeeded(oriented, transformations);
-            int cropX = 0;
-            int cropY = Math.max(0, (int) Math.floor(normalized.getHeight() * 0.58));
-            int cropWidth = normalized.getWidth();
-            int cropHeight = normalized.getHeight() - cropY;
-            if (cropHeight < Math.max(80, normalized.getHeight() * 0.20)) {
-                transformations.add("mrz_skipped_crop_too_small");
-                return new MrzImageProcessingResult(false, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], normalizedMimeType);
+            List<String> baseTransformations = new ArrayList<>();
+            BufferedImage oriented = applyExifOrientation(image, readExifOrientation(originalBytes), baseTransformations);
+            BufferedImage normalized = resizeIfNeeded(oriented, baseTransformations);
+            List<MrzImageProcessingResult> variants = new ArrayList<>();
+            if (ocrReadyImage != null && ocrReadyImage.processed() && ocrReadyImage.processedBytes().length > 0) {
+                variants.add(new MrzImageProcessingResult(
+                        true,
+                        "full_ocr_ready",
+                        0,
+                        0,
+                        ocrReadyImage.processedWidth(),
+                        ocrReadyImage.processedHeight(),
+                        List.of("source_ocr_ready_full"),
+                        ocrReadyImage.processedBytes(),
+                        ocrReadyImage.processedMimeType()
+                ));
             }
-
-            transformations.add("mrz_crop_bottom_42_percent");
-            BufferedImage crop = normalized.getSubimage(cropX, cropY, cropWidth, cropHeight);
-            BufferedImage upscaled = scale(crop, 3.0, transformations, "mrz_upscale_x3");
-            BufferedImage grayscale = grayscale(upscaled);
-            transformations.add("mrz_grayscale");
-            BufferedImage contrasted = new RescaleOp(1.45f, -18f, null).filter(grayscale, null);
-            transformations.add("mrz_contrast_strong");
-            BufferedImage thresholded = adaptiveThreshold(contrasted);
-            transformations.add("mrz_threshold_adaptive");
-            BufferedImage sharpened = sharpen(thresholded, "mrz_sharpen_ocr", transformations);
-
-            byte[] processedBytes = encodeJpeg(sharpened, MRZ_JPEG_QUALITY);
-            if (processedBytes.length == 0) {
-                transformations.add("mrz_skipped_encode_failed");
-                return new MrzImageProcessingResult(false, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], normalizedMimeType);
+            for (int bottomPercent : List.of(25, 30, 35, 42)) {
+                variants.add(prepareNonDestructiveMrzVariant(normalized, bottomPercent, baseTransformations));
             }
-            return new MrzImageProcessingResult(true, cropX, cropY, cropWidth, cropHeight, transformations, processedBytes, MediaType.IMAGE_JPEG_VALUE);
+            return variants;
         } catch (Exception exception) {
             log.warn("kyc mrz image processing failed mimeType={} bytes={} error={}",
                     normalizedMimeType,
                     originalBytes == null ? 0 : originalBytes.length,
                     exception.getMessage());
+            List<String> transformations = new ArrayList<>();
             transformations.add("mrz_skipped_processing_error");
-            return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
+            return List.of(new MrzImageProcessingResult(false, "bottom_42", null, null, null, null, transformations, new byte[0], normalizedMimeType));
         }
+    }
+
+    private MrzImageProcessingResult prepareNonDestructiveMrzVariant(BufferedImage normalized,
+                                                                     int bottomPercent,
+                                                                     List<String> baseTransformations) throws Exception {
+        List<String> transformations = new ArrayList<>(baseTransformations);
+        int cropX = 0;
+        int cropHeight = Math.max(1, (int) Math.round(normalized.getHeight() * (bottomPercent / 100.0)));
+        int cropY = Math.max(0, normalized.getHeight() - cropHeight);
+        int cropWidth = normalized.getWidth();
+        String strategy = "bottom_" + bottomPercent;
+        if (cropHeight < Math.max(80, normalized.getHeight() * 0.20)) {
+            transformations.add("mrz_skipped_crop_too_small");
+            return new MrzImageProcessingResult(false, strategy, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], MediaType.IMAGE_JPEG_VALUE);
+        }
+
+        transformations.add("mrz_crop_bottom_" + bottomPercent + "_percent");
+        BufferedImage crop = normalized.getSubimage(cropX, cropY, cropWidth, cropHeight);
+        BufferedImage upscaled = scale(crop, 2.0, transformations, "mrz_upscale_x2");
+        BufferedImage grayscale = grayscale(upscaled);
+        transformations.add("mrz_grayscale");
+        transformations.add("mrz_no_threshold");
+        transformations.add("mrz_no_strong_contrast");
+        transformations.add("mrz_no_aggressive_sharpen");
+
+        byte[] processedBytes = encodeJpeg(grayscale, MRZ_JPEG_QUALITY);
+        if (processedBytes.length == 0) {
+            transformations.add("mrz_skipped_encode_failed");
+            return new MrzImageProcessingResult(false, strategy, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], MediaType.IMAGE_JPEG_VALUE);
+        }
+        return new MrzImageProcessingResult(true, strategy, cropX, cropY, cropWidth, cropHeight, transformations, processedBytes, MediaType.IMAGE_JPEG_VALUE);
     }
 
     private ImageProcessingResult fallback(byte[] originalBytes,
@@ -501,6 +537,7 @@ public class KycImageProcessingService {
 
     public record MrzImageProcessingResult(
             boolean processed,
+            String cropStrategy,
             Integer cropX,
             Integer cropY,
             Integer cropWidth,
