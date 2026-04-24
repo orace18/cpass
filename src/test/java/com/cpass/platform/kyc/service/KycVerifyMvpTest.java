@@ -38,7 +38,7 @@ public class KycVerifyMvpTest {
                 "+33600000000",
                 "123456789",
                 "hash123",
-                KycLevel.LEVEL_1,
+                null,
                 true
         );
 
