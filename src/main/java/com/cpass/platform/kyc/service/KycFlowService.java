@@ -34,9 +34,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -54,6 +56,11 @@ public class KycFlowService {
     static final String REASON_BIOMETRIC_REVIEW_REQUIRED = "Biometric face match is inconclusive. Manual review required.";
     static final String REASON_BIOMETRIC_MISMATCH = "Biometric face match does not match the identity document. Please retry selfie capture.";
     static final String REASON_MISSING_REQUIRED_DOCUMENT = "Required identity document is missing.";
+    static final String WORKFLOW_WAITING_FOR_DOCUMENTS = "WAITING_FOR_DOCUMENTS";
+    static final String WORKFLOW_READY_FOR_DECISION = "READY_FOR_DECISION";
+    private static final String SLOT_IDENTITY_FRONT = "IDENTITY_FRONT";
+    private static final String SLOT_IDENTITY_BACK = "IDENTITY_BACK";
+    private static final String SLOT_SELFIE = "SELFIE";
 
     private final KycCaseRepository kycCaseRepository;
     private final KycDocumentRepository kycDocumentRepository;
@@ -121,11 +128,26 @@ public class KycFlowService {
                 documents.stream()
                         .map(document -> document.getId() + ":" + document.getDocumentType() + ":" + document.getStatus() + ":" + document.getValidityStatus())
                         .toList());
-        if (documents.isEmpty() && requiresIdentityChecks(steps)) {
-            log.info("kyc workflow no-op requestId={} clientId={} caseId={} reason=no_documents_found",
+
+        DocumentReadiness documentReadiness = documentReadiness(steps, documents);
+        log.info("kyc workflow document readiness requestId={} clientId={} caseId={} requiredDocuments={} receivedDocuments={} missingDocuments={} workflowDecision={}",
+                RequestCorrelation.requestId(),
+                kycCase.getClientId(),
+                kycCase.getId(),
+                documentReadiness.requiredDocuments(),
+                documentReadiness.receivedDocuments(),
+                documentReadiness.missingDocuments(),
+                documentReadiness.ready() ? WORKFLOW_READY_FOR_DECISION : WORKFLOW_WAITING_FOR_DOCUMENTS);
+        if (!documentReadiness.ready()) {
+            log.info("kyc workflow no-op requestId={} clientId={} caseId={} reason={} requiredDocuments={} receivedDocuments={} missingDocuments={} workflowDecision={}",
                     RequestCorrelation.requestId(),
                     kycCase.getClientId(),
-                    kycCase.getId());
+                    kycCase.getId(),
+                    documents.isEmpty() ? "no_documents_found" : "missing_required_documents",
+                    documentReadiness.requiredDocuments(),
+                    documentReadiness.receivedDocuments(),
+                    documentReadiness.missingDocuments(),
+                    WORKFLOW_WAITING_FOR_DOCUMENTS);
             return;
         }
 
@@ -465,20 +487,126 @@ public class KycFlowService {
                 || steps.contains(KycStepType.DOCUMENT_EXPIRY_CHECK);
     }
 
-    private KycDocumentEntity latestIdentityDocument(List<KycDocumentEntity> documents) {
+    private DocumentReadiness documentReadiness(List<KycStepType> steps, List<KycDocumentEntity> documents) {
+        Set<String> requiredDocuments = new LinkedHashSet<>();
+        if (requiresIdentityChecks(steps)) {
+            requiredDocuments.add(SLOT_IDENTITY_FRONT);
+            requiredBackDocumentType(documents).ifPresent(documentType -> requiredDocuments.add(SLOT_IDENTITY_BACK));
+        }
+        if (steps.contains(KycStepType.FACE_MATCH)) {
+            requiredDocuments.add(SLOT_SELFIE);
+        }
+
+        Set<String> receivedDocuments = receivedDocuments(documents);
+        Set<String> missingDocuments = new LinkedHashSet<>(requiredDocuments);
+        missingDocuments.removeAll(receivedDocuments);
+        return new DocumentReadiness(
+                List.copyOf(requiredDocuments),
+                List.copyOf(receivedDocuments),
+                List.copyOf(missingDocuments)
+        );
+    }
+
+    private Optional<KycDocumentType> requiredBackDocumentType(List<KycDocumentEntity> documents) {
         return documents.stream()
                 .filter(this::isIdentityDocument)
+                .filter(this::requiresBack)
+                .map(KycDocumentEntity::getDocumentType)
+                .findFirst();
+    }
+
+    private Set<String> receivedDocuments(List<KycDocumentEntity> documents) {
+        Set<String> receivedDocuments = new LinkedHashSet<>();
+        int unknownIdentityDocuments = 0;
+        for (KycDocumentEntity document : documents) {
+            if (document.getDocumentType() == KycDocumentType.SELFIE) {
+                receivedDocuments.add(SLOT_SELFIE);
+                continue;
+            }
+            if (!isIdentityDocument(document)) {
+                continue;
+            }
+            String slot = documentSlot(document);
+            if (SLOT_IDENTITY_BACK.equals(slot)) {
+                receivedDocuments.add(SLOT_IDENTITY_BACK);
+            } else if (SLOT_IDENTITY_FRONT.equals(slot)) {
+                receivedDocuments.add(SLOT_IDENTITY_FRONT);
+            } else {
+                unknownIdentityDocuments++;
+                receivedDocuments.add(unknownIdentityDocuments == 1 ? SLOT_IDENTITY_FRONT : SLOT_IDENTITY_BACK);
+            }
+        }
+        return receivedDocuments;
+    }
+
+    private boolean requiresBack(KycDocumentEntity document) {
+        KycDocumentType documentType = document.getDocumentType();
+        boolean twoSidedType = documentType == KycDocumentType.ID_CARD
+                || documentType == KycDocumentType.NATIONAL_ID
+                || documentType == KycDocumentType.VOTER_CARD
+                || documentType == KycDocumentType.DRIVER_LICENSE;
+        if (!twoSidedType) {
+            return false;
+        }
+        Map<String, Object> metadata = documentMetadata(document);
+        return SLOT_IDENTITY_FRONT.equals(documentSlot(document))
+                || SLOT_IDENTITY_BACK.equals(documentSlot(document))
+                || asBoolean(metadata.get("requiresBack"))
+                || asBoolean(metadata.get("requiresIdentityBack"))
+                || asBoolean(metadata.get("backRequired"));
+    }
+
+    private String documentSlot(KycDocumentEntity document) {
+        Map<String, Object> metadata = documentMetadata(document);
+        String rawSlot = firstNonBlank(
+                firstNonBlank(asString(metadata.get("documentSlot")), asString(metadata.get("documentSide"))),
+                firstNonBlank(asString(metadata.get("side")), asString(metadata.get("slot")))
+        );
+        if (rawSlot == null) {
+            return null;
+        }
+        String normalized = rawSlot.toUpperCase(java.util.Locale.ROOT)
+                .replace('-', '_')
+                .replace(' ', '_');
+        if (normalized.contains("BACK") || normalized.contains("VERSO")) {
+            return SLOT_IDENTITY_BACK;
+        }
+        if (normalized.contains("FRONT") || normalized.contains("RECTO")) {
+            return SLOT_IDENTITY_FRONT;
+        }
+        return null;
+    }
+
+    private KycDocumentEntity latestIdentityDocument(List<KycDocumentEntity> documents) {
+        KycDocumentEntity preferred = documents.stream()
+                .filter(this::isIdentityDocument)
+                .filter(document -> !SLOT_IDENTITY_BACK.equals(documentSlot(document)))
                 .reduce((first, second) -> second)
                 .orElse(null);
+        return preferred == null
+                ? documents.stream()
+                .filter(this::isIdentityDocument)
+                .reduce((first, second) -> second)
+                .orElse(null)
+                : preferred;
     }
 
     private KycDocumentEntity latestUsableIdentityDocument(List<KycDocumentEntity> documents) {
-        return documents.stream()
+        KycDocumentEntity preferred = documents.stream()
                 .filter(this::isIdentityDocument)
+                .filter(document -> !SLOT_IDENTITY_BACK.equals(documentSlot(document)))
                 .filter(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID)
                 .filter(document -> !isUnsupportedDocumentType(document))
                 .reduce((first, second) -> second)
                 .orElse(null);
+        return preferred == null
+                ? documents.stream()
+                .filter(this::isIdentityDocument)
+                .filter(document -> document.getValidityStatus() == KycDocumentValidityStatus.VALID)
+                .filter(document -> !isUnsupportedDocumentType(document))
+                .reduce((first, second) -> second)
+                .orElse(null)
+                : preferred;
     }
 
     private KycDocumentEntity latestUnsupportedIdentityDocument(List<KycDocumentEntity> documents) {
@@ -653,5 +781,13 @@ public class KycFlowService {
             return null;
         }
         return String.valueOf(value);
+    }
+
+    private record DocumentReadiness(List<String> requiredDocuments,
+                                     List<String> receivedDocuments,
+                                     List<String> missingDocuments) {
+        private boolean ready() {
+            return missingDocuments.isEmpty();
+        }
     }
 }

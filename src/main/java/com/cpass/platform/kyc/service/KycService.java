@@ -131,7 +131,11 @@ public class KycService {
             return new KycCheckOrInitResponse(reuseDecision.status(), requiredLevel, kycCase.getId(), kycCase.getReferenceId());
         }
 
-        workflowPublisher.publish(kycCase.getId());
+        log.info("kyc case awaiting documents requestId={} clientId={} caseId={} workflowTriggered=false workflowDecision={}",
+                RequestCorrelation.requestId(),
+                clientId,
+                kycCase.getId(),
+                KycFlowService.WORKFLOW_WAITING_FOR_DOCUMENTS);
         return new KycCheckOrInitResponse(reuseDecision.status(), requiredLevel, kycCase.getId(), kycCase.getReferenceId());
     }
 
@@ -855,6 +859,18 @@ public class KycService {
         }
 
         List<KycDocumentEntity> documents = kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase);
+        if (!documentsReadyForDecision(documents)) {
+            log.info("kyc upload resubmission deferred requestId={} clientId={} caseId={} documentId={} documentType={} caseStatus={} workflowDecision={}",
+                    RequestCorrelation.requestId(),
+                    kycCase.getClientId(),
+                    kycCase.getId(),
+                    uploadedDocument.getId(),
+                    uploadedDocument.getDocumentType(),
+                    kycCase.getStatus(),
+                    KycFlowService.WORKFLOW_WAITING_FOR_DOCUMENTS);
+            return uploadedDocument;
+        }
+
         boolean selfie = uploadedDocument.getDocumentType() == KycDocumentType.SELFIE;
         boolean hasUsableIdentityDocument = documents.stream()
                 .filter(this::isIdentityDocument)
@@ -883,6 +899,78 @@ public class KycService {
         });
 
         return savedDocument;
+    }
+
+    private boolean documentsReadyForDecision(List<KycDocumentEntity> documents) {
+        boolean hasIdentityFront = false;
+        boolean hasIdentityBack = false;
+        boolean requiresIdentityBack = false;
+        boolean hasSelfie = false;
+        int unknownIdentityDocuments = 0;
+
+        for (KycDocumentEntity document : documents) {
+            if (document.getDocumentType() == KycDocumentType.SELFIE) {
+                hasSelfie = true;
+                continue;
+            }
+            if (!isIdentityDocument(document)) {
+                continue;
+            }
+            requiresIdentityBack = requiresIdentityBack || requiresBack(document);
+            String slot = documentSlot(document);
+            if ("IDENTITY_BACK".equals(slot)) {
+                hasIdentityBack = true;
+            } else if ("IDENTITY_FRONT".equals(slot)) {
+                hasIdentityFront = true;
+            } else {
+                unknownIdentityDocuments++;
+                if (unknownIdentityDocuments == 1) {
+                    hasIdentityFront = true;
+                } else {
+                    hasIdentityBack = true;
+                }
+            }
+        }
+
+        return hasIdentityFront && hasSelfie && (!requiresIdentityBack || hasIdentityBack);
+    }
+
+    private boolean requiresBack(KycDocumentEntity document) {
+        KycDocumentType documentType = document.getDocumentType();
+        boolean twoSidedType = documentType == KycDocumentType.ID_CARD
+                || documentType == KycDocumentType.NATIONAL_ID
+                || documentType == KycDocumentType.VOTER_CARD
+                || documentType == KycDocumentType.DRIVER_LICENSE;
+        if (!twoSidedType) {
+            return false;
+        }
+        Map<String, Object> metadata = documentMetadata(document);
+        return "IDENTITY_FRONT".equals(documentSlot(document))
+                || "IDENTITY_BACK".equals(documentSlot(document))
+                || asBoolean(metadata.get("requiresBack"))
+                || asBoolean(metadata.get("requiresIdentityBack"))
+                || asBoolean(metadata.get("backRequired"));
+    }
+
+    private String documentSlot(KycDocumentEntity document) {
+        Map<String, Object> metadata = documentMetadata(document);
+        String rawSlot = blankToNull(firstNonBlank(
+                firstNonBlank(asString(metadata.get("documentSlot")), asString(metadata.get("documentSide"))),
+                firstNonBlank(asString(metadata.get("side")), asString(metadata.get("slot")))
+        ));
+        if (rawSlot == null) {
+            return null;
+        }
+        String normalized = rawSlot.toUpperCase(Locale.ROOT)
+                .replace('-', '_')
+                .replace(' ', '_');
+        if (normalized.contains("BACK") || normalized.contains("VERSO")) {
+            return "IDENTITY_BACK";
+        }
+        if (normalized.contains("FRONT") || normalized.contains("RECTO")) {
+            return "IDENTITY_FRONT";
+        }
+        return null;
     }
 
     private String resubmissionReason(KycDocumentEntity document, boolean selfie) {
@@ -1092,6 +1180,24 @@ public class KycService {
             return "Wait for an operator review before asking the user to retry.";
         }
         return null;
+    }
+
+    private String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    private boolean asBoolean(Object value) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String asString(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
+        }
+        return String.valueOf(value);
     }
 
     private String blankToNull(String value) {

@@ -72,35 +72,67 @@ class KycFlowServiceTest {
     }
 
     @Test
-    void shouldApproveWhenDocumentsAreCompleteAndSignalsCoherent() throws Exception {
+    void shouldNotPersistFinalDecisionWhenCaseHasNoDocuments() {
         UUID caseId = UUID.randomUUID();
-        KycCaseEntity kycCase = new KycCaseEntity();
-        kycCase.setId(caseId);
-        kycCase.setLevel(KycLevel.LEVEL_1);
-        kycCase.setStatus(KycCaseStatus.INITIATED);
-        kycCase.setIdentity(new IdentityEntity());
-        kycCase.setMetadataJson(objectMapper.writeValueAsString(Map.of("birthDate", "1990-01-01")));
-
-        KycDocumentEntity identityDoc = new KycDocumentEntity();
-        identityDoc.setDocumentType(KycDocumentType.NATIONAL_ID);
-        identityDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
-        identityDoc.setDocumentNumber("12345");
-        identityDoc.setExpiryDate(LocalDate.now().plusYears(1));
-        identityDoc.setMetadataJson(objectMapper.writeValueAsString(Map.of(
-                "confidenceScore", 90,
-                "supportedDocumentType", true,
-                "extractedFields", Map.of("fullName", "JOHN DOE", "birthDate", "1990-01-01")
-        )));
-
-        KycDocumentEntity selfieDoc = new KycDocumentEntity();
-        selfieDoc.setDocumentType(KycDocumentType.SELFIE);
-        selfieDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
-        selfieDoc.setMetadataJson("{}");
+        KycCaseEntity kycCase = caseEntity(caseId);
 
         when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
-        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc, selfieDoc));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of());
+
+        kycFlowService.process(caseId);
+
+        assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.INITIATED);
+        verify(kycCaseRepository, never()).save(any());
+        verify(metricsService, never()).recordCaseDecision(any(), any());
+    }
+
+    @Test
+    void shouldWaitForDocumentsWhenOneOfThreeRequiredDocumentsIsPresent() throws Exception {
+        UUID caseId = UUID.randomUUID();
+        KycCaseEntity kycCase = caseEntity(caseId);
+        KycDocumentEntity front = validIdentityDocument(KycDocumentType.NATIONAL_ID, "IDENTITY_FRONT");
+
+        when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(front));
         when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
-        
+
+        kycFlowService.process(caseId);
+
+        assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.INITIATED);
+        verify(kycCaseRepository, never()).save(any());
+        verify(metricsService, never()).recordCaseDecision(any(), any());
+    }
+
+    @Test
+    void shouldWaitForDocumentsWhenTwoOfThreeRequiredDocumentsArePresent() throws Exception {
+        UUID caseId = UUID.randomUUID();
+        KycCaseEntity kycCase = caseEntity(caseId);
+        KycDocumentEntity front = validIdentityDocument(KycDocumentType.NATIONAL_ID, "IDENTITY_FRONT");
+        KycDocumentEntity selfieDoc = validSelfieDocument();
+
+        when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(front, selfieDoc));
+        when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
+
+        kycFlowService.process(caseId);
+
+        assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.INITIATED);
+        verify(kycCaseRepository, never()).save(any());
+        verify(metricsService, never()).recordCaseDecision(any(), any());
+    }
+
+    @Test
+    void shouldLaunchDecisionWhenThreeRequiredDocumentsArePresent() throws Exception {
+        UUID caseId = UUID.randomUUID();
+        KycCaseEntity kycCase = caseEntity(caseId);
+        KycDocumentEntity front = validIdentityDocument(KycDocumentType.NATIONAL_ID, "IDENTITY_FRONT");
+        KycDocumentEntity back = validIdentityDocument(KycDocumentType.NATIONAL_ID, "IDENTITY_BACK");
+        KycDocumentEntity selfieDoc = validSelfieDocument();
+
+        when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(front, back, selfieDoc));
+        when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
+
         SelfieAnalysisService.SelfieAnalysisResult selfieResult = new SelfieAnalysisService.SelfieAnalysisResult(
                 true, true, 100, true, 90, SelfieAnalysisService.FACE_DECISION_MATCH, 85, KycDocumentValidityStatus.VALID, Map.of()
         );
@@ -114,19 +146,23 @@ class KycFlowServiceTest {
     }
 
     @Test
-    void shouldReturnResubmissionRequiredWhenDocumentUnreadable() throws Exception {
+    void shouldKeepUnreadableDocumentBehaviorAfterDossierIsComplete() throws Exception {
         UUID caseId = UUID.randomUUID();
-        KycCaseEntity kycCase = new KycCaseEntity();
-        kycCase.setId(caseId);
-        kycCase.setLevel(KycLevel.LEVEL_1);
-        kycCase.setStatus(KycCaseStatus.INITIATED);
+        KycCaseEntity kycCase = caseEntity(caseId);
 
         KycDocumentEntity identityDoc = new KycDocumentEntity();
-        identityDoc.setDocumentType(KycDocumentType.NATIONAL_ID);
-        identityDoc.setValidityStatus(KycDocumentValidityStatus.UNREADABLE); // Unreadable
+        identityDoc.setDocumentType(KycDocumentType.PASSPORT);
+        identityDoc.setValidityStatus(KycDocumentValidityStatus.UNREADABLE);
+        identityDoc.setMetadataJson(objectMapper.writeValueAsString(Map.of(
+                "confidenceScore", 30,
+                "supportedDocumentType", true,
+                "extractedFields", Map.of()
+        )));
+        KycDocumentEntity selfieDoc = validSelfieDocument();
 
         when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
-        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc, selfieDoc));
+        when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
 
         kycFlowService.process(caseId);
 
@@ -138,20 +174,18 @@ class KycFlowServiceTest {
     @Test
     void shouldReturnResubmissionRequiredWhenSelfieUnreadable() throws Exception {
         UUID caseId = UUID.randomUUID();
-        KycCaseEntity kycCase = new KycCaseEntity();
-        kycCase.setId(caseId);
-        kycCase.setLevel(KycLevel.LEVEL_1);
-        kycCase.setStatus(KycCaseStatus.INITIATED);
+        KycCaseEntity kycCase = caseEntity(caseId);
 
-        KycDocumentEntity identityDoc = new KycDocumentEntity();
-        identityDoc.setDocumentType(KycDocumentType.NATIONAL_ID);
-        identityDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
+        KycDocumentEntity identityDoc = validIdentityDocument(KycDocumentType.PASSPORT, "IDENTITY_FRONT");
 
         KycDocumentEntity selfieDoc = new KycDocumentEntity();
         selfieDoc.setDocumentType(KycDocumentType.SELFIE);
+        selfieDoc.setValidityStatus(KycDocumentValidityStatus.UNREADABLE);
+        selfieDoc.setMetadataJson("{}");
 
         when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
         when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc, selfieDoc));
+        when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
         
         SelfieAnalysisService.SelfieAnalysisResult selfieResult = new SelfieAnalysisService.SelfieAnalysisResult(
                 false, false, 0, false, 0, null, 0, KycDocumentValidityStatus.UNREADABLE, Map.of()
@@ -168,15 +202,11 @@ class KycFlowServiceTest {
     @Test
     void shouldReturnResubmissionRequiredOnMismatch() throws Exception {
         UUID caseId = UUID.randomUUID();
-        KycCaseEntity kycCase = new KycCaseEntity();
-        kycCase.setId(caseId);
-        kycCase.setLevel(KycLevel.LEVEL_1);
-        kycCase.setStatus(KycCaseStatus.INITIATED);
-        kycCase.setIdentity(new IdentityEntity());
+        KycCaseEntity kycCase = caseEntity(caseId);
         kycCase.setMetadataJson(objectMapper.writeValueAsString(Map.of("fullName", "ALICE SMITH", "birthDate", "1990-01-01")));
 
         KycDocumentEntity identityDoc = new KycDocumentEntity();
-        identityDoc.setDocumentType(KycDocumentType.NATIONAL_ID);
+        identityDoc.setDocumentType(KycDocumentType.PASSPORT);
         identityDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
         identityDoc.setDocumentNumber("12345");
         identityDoc.setExpiryDate(LocalDate.now().plusYears(1));
@@ -185,9 +215,10 @@ class KycFlowServiceTest {
                 "supportedDocumentType", true,
                 "extractedFields", Map.of("fullName", "BOB JONES", "birthDate", "1990-01-01") // Mismatch!
         )));
+        KycDocumentEntity selfieDoc = validSelfieDocument();
 
         when(kycCaseRepository.findById(caseId)).thenReturn(Optional.of(kycCase));
-        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc));
+        when(kycDocumentRepository.findByKycCaseOrderByCreatedAtAsc(kycCase)).thenReturn(List.of(identityDoc, selfieDoc));
         when(documentAnalysisService.parse(any())).thenAnswer(i -> objectMapper.readValue((String) i.getArgument(0), Map.class));
 
         kycFlowService.process(caseId);
@@ -195,5 +226,38 @@ class KycFlowServiceTest {
         assertThat(kycCase.getStatus()).isEqualTo(KycCaseStatus.RESUBMISSION_REQUIRED);
         assertThat(kycCase.getStatusReason()).isEqualTo("Declared identity information does not match extracted document information.");
         verify(kycCaseRepository).save(kycCase);
+    }
+
+    private KycCaseEntity caseEntity(UUID caseId) {
+        KycCaseEntity kycCase = new KycCaseEntity();
+        kycCase.setId(caseId);
+        kycCase.setLevel(KycLevel.LEVEL_1);
+        kycCase.setStatus(KycCaseStatus.INITIATED);
+        kycCase.setIdentity(new IdentityEntity());
+        kycCase.setMetadataJson("{}");
+        return kycCase;
+    }
+
+    private KycDocumentEntity validIdentityDocument(KycDocumentType documentType, String documentSlot) throws Exception {
+        KycDocumentEntity identityDoc = new KycDocumentEntity();
+        identityDoc.setDocumentType(documentType);
+        identityDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
+        identityDoc.setDocumentNumber("12345");
+        identityDoc.setExpiryDate(LocalDate.now().plusYears(1));
+        identityDoc.setMetadataJson(objectMapper.writeValueAsString(Map.of(
+                "documentSlot", documentSlot,
+                "confidenceScore", 90,
+                "supportedDocumentType", true,
+                "extractedFields", Map.of("fullName", "JOHN DOE", "birthDate", "1990-01-01")
+        )));
+        return identityDoc;
+    }
+
+    private KycDocumentEntity validSelfieDocument() {
+        KycDocumentEntity selfieDoc = new KycDocumentEntity();
+        selfieDoc.setDocumentType(KycDocumentType.SELFIE);
+        selfieDoc.setValidityStatus(KycDocumentValidityStatus.VALID);
+        selfieDoc.setMetadataJson("{}");
+        return selfieDoc;
     }
 }
