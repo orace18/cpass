@@ -32,6 +32,7 @@ public class KycImageProcessingService {
 
     private static final int MAX_DIMENSION = 2400;
     private static final float JPEG_QUALITY = 0.92f;
+    private static final float MRZ_JPEG_QUALITY = 0.95f;
 
     public ImageProcessingResult prepareOcrReady(byte[] originalBytes, String mimeType) {
         String normalizedMimeType = normalizeMimeType(mimeType);
@@ -82,6 +83,59 @@ public class KycImageProcessingService {
                     exception.getMessage());
             transformations.add("fallback_original_processing_error");
             return fallback(originalBytes, normalizedMimeType, originalDimensions, transformations);
+        }
+    }
+
+    public MrzImageProcessingResult prepareMrzReady(byte[] originalBytes, String mimeType) {
+        String normalizedMimeType = normalizeMimeType(mimeType);
+        List<String> transformations = new ArrayList<>();
+        if (!isProcessableImage(normalizedMimeType) || originalBytes == null || originalBytes.length == 0) {
+            transformations.add("mrz_skipped_unprocessable");
+            return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
+        }
+
+        try {
+            BufferedImage image = ImageIO.read(new ByteArrayInputStream(originalBytes));
+            if (image == null) {
+                transformations.add("mrz_skipped_decode_failed");
+                return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
+            }
+
+            BufferedImage oriented = applyExifOrientation(image, readExifOrientation(originalBytes), transformations);
+            BufferedImage normalized = resizeIfNeeded(oriented, transformations);
+            int cropX = 0;
+            int cropY = Math.max(0, (int) Math.floor(normalized.getHeight() * 0.58));
+            int cropWidth = normalized.getWidth();
+            int cropHeight = normalized.getHeight() - cropY;
+            if (cropHeight < Math.max(80, normalized.getHeight() * 0.20)) {
+                transformations.add("mrz_skipped_crop_too_small");
+                return new MrzImageProcessingResult(false, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], normalizedMimeType);
+            }
+
+            transformations.add("mrz_crop_bottom_42_percent");
+            BufferedImage crop = normalized.getSubimage(cropX, cropY, cropWidth, cropHeight);
+            BufferedImage upscaled = scale(crop, 3.0, transformations, "mrz_upscale_x3");
+            BufferedImage grayscale = grayscale(upscaled);
+            transformations.add("mrz_grayscale");
+            BufferedImage contrasted = new RescaleOp(1.45f, -18f, null).filter(grayscale, null);
+            transformations.add("mrz_contrast_strong");
+            BufferedImage thresholded = adaptiveThreshold(contrasted);
+            transformations.add("mrz_threshold_adaptive");
+            BufferedImage sharpened = sharpen(thresholded, "mrz_sharpen_ocr", transformations);
+
+            byte[] processedBytes = encodeJpeg(sharpened, MRZ_JPEG_QUALITY);
+            if (processedBytes.length == 0) {
+                transformations.add("mrz_skipped_encode_failed");
+                return new MrzImageProcessingResult(false, cropX, cropY, cropWidth, cropHeight, transformations, new byte[0], normalizedMimeType);
+            }
+            return new MrzImageProcessingResult(true, cropX, cropY, cropWidth, cropHeight, transformations, processedBytes, MediaType.IMAGE_JPEG_VALUE);
+        } catch (Exception exception) {
+            log.warn("kyc mrz image processing failed mimeType={} bytes={} error={}",
+                    normalizedMimeType,
+                    originalBytes == null ? 0 : originalBytes.length,
+                    exception.getMessage());
+            transformations.add("mrz_skipped_processing_error");
+            return new MrzImageProcessingResult(false, null, null, null, null, transformations, new byte[0], normalizedMimeType);
         }
     }
 
@@ -206,6 +260,76 @@ public class KycImageProcessingService {
         return new ConvolveOp(new Kernel(3, 3, sharpenKernel), ConvolveOp.EDGE_NO_OP, null).filter(contrasted, null);
     }
 
+    private BufferedImage scale(BufferedImage image, double scale, List<String> transformations, String transformation) {
+        int width = Math.max(1, (int) Math.round(image.getWidth() * scale));
+        int height = Math.max(1, (int) Math.round(image.getHeight() * scale));
+        BufferedImage target = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = target.createGraphics();
+        graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        graphics.drawImage(image, 0, 0, width, height, null);
+        graphics.dispose();
+        transformations.add(transformation);
+        return target;
+    }
+
+    private BufferedImage grayscale(BufferedImage image) {
+        BufferedImage grayscale = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D graphics = grayscale.createGraphics();
+        graphics.drawImage(image, 0, 0, null);
+        graphics.dispose();
+        return grayscale;
+    }
+
+    private BufferedImage adaptiveThreshold(BufferedImage image) {
+        BufferedImage gray = grayscale(image);
+        int width = gray.getWidth();
+        int height = gray.getHeight();
+        BufferedImage output = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+        int radius = Math.max(12, Math.min(width, height) / 80);
+        long[][] integral = integralImage(gray);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int minX = Math.max(0, x - radius);
+                int maxX = Math.min(width - 1, x + radius);
+                int minY = Math.max(0, y - radius);
+                int maxY = Math.min(height - 1, y + radius);
+                long sum = integral[maxY + 1][maxX + 1] - integral[minY][maxX + 1] - integral[maxY + 1][minX] + integral[minY][minX];
+                int count = (maxX - minX + 1) * (maxY - minY + 1);
+                int localAverage = count == 0 ? 180 : (int) (sum / count);
+                int pixel = gray.getRGB(x, y) & 0xff;
+                int binary = pixel < localAverage - 7 ? 0 : 255;
+                int rgb = (binary << 16) | (binary << 8) | binary;
+                output.setRGB(x, y, rgb);
+            }
+        }
+        return output;
+    }
+
+    private long[][] integralImage(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        long[][] integral = new long[height + 1][width + 1];
+        for (int y = 1; y <= height; y++) {
+            long rowSum = 0;
+            for (int x = 1; x <= width; x++) {
+                rowSum += image.getRGB(x - 1, y - 1) & 0xff;
+                integral[y][x] = integral[y - 1][x] + rowSum;
+            }
+        }
+        return integral;
+    }
+
+    private BufferedImage sharpen(BufferedImage image, String transformation, List<String> transformations) {
+        float[] kernel = {
+                0f, -0.18f, 0f,
+                -0.18f, 1.72f, -0.18f,
+                0f, -0.18f, 0f
+        };
+        transformations.add(transformation);
+        return new ConvolveOp(new Kernel(3, 3, kernel), ConvolveOp.EDGE_NO_OP, null).filter(image, null);
+    }
+
     private BufferedImage toRgb(BufferedImage image) {
         if (image.getType() == BufferedImage.TYPE_INT_RGB) {
             return image;
@@ -247,6 +371,10 @@ public class KycImageProcessingService {
             return output.toByteArray();
         }
 
+        return encodeJpeg(image, JPEG_QUALITY);
+    }
+
+    private byte[] encodeJpeg(BufferedImage image, float quality) throws Exception {
         Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
         if (!writers.hasNext()) {
             return new byte[0];
@@ -256,7 +384,7 @@ public class KycImageProcessingService {
         try (ImageOutputStream imageOutput = ImageIO.createImageOutputStream(output)) {
             ImageWriteParam params = writer.getDefaultWriteParam();
             params.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-            params.setCompressionQuality(JPEG_QUALITY);
+            params.setCompressionQuality(quality);
             writer.setOutput(imageOutput);
             writer.write(null, new IIOImage(image, null, null), params);
         } finally {
@@ -369,5 +497,23 @@ public class KycImageProcessingService {
             String processedMimeType,
             boolean processed
     ) {
+    }
+
+    public record MrzImageProcessingResult(
+            boolean processed,
+            Integer cropX,
+            Integer cropY,
+            Integer cropWidth,
+            Integer cropHeight,
+            List<String> transformationsApplied,
+            byte[] processedBytes,
+            String processedMimeType
+    ) {
+        public String cropCoordinates() {
+            if (cropX == null || cropY == null || cropWidth == null || cropHeight == null) {
+                return null;
+            }
+            return cropX + "," + cropY + "," + cropWidth + "," + cropHeight;
+        }
     }
 }

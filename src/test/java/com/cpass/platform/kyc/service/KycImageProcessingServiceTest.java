@@ -82,6 +82,21 @@ class KycImageProcessingServiceTest {
         assertThat(result.transformationsApplied()).contains("fallback_original_decode_failed");
     }
 
+    @Test
+    void shouldPrepareDedicatedMrzReadyCropFromBottomOfDocument() throws Exception {
+        byte[] jpeg = passportLikeJpeg(1000, 700);
+
+        KycImageProcessingService.MrzImageProcessingResult result =
+                service.prepareMrzReady(jpeg, MediaType.IMAGE_JPEG_VALUE);
+
+        assertThat(result.processed()).isTrue();
+        assertThat(result.cropCoordinates()).isEqualTo("0,406,1000,294");
+        assertThat(result.processedMimeType()).isEqualTo(MediaType.IMAGE_JPEG_VALUE);
+        assertThat(result.processedBytes()).isNotEmpty();
+        assertThat(result.transformationsApplied())
+                .contains("mrz_crop_bottom_42_percent", "mrz_upscale_x3", "mrz_grayscale", "mrz_contrast_strong", "mrz_threshold_adaptive", "mrz_sharpen_ocr");
+    }
+
     private byte[] jpeg(int width, int height, Color color) throws Exception {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = image.createGraphics();
@@ -89,6 +104,22 @@ class KycImageProcessingServiceTest {
         graphics.fillRect(0, 0, width, height);
         graphics.setColor(Color.BLACK);
         graphics.drawString("CPASS KYC TEST 123456789", 20, Math.max(30, height / 2));
+        graphics.dispose();
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(image, "jpg", output);
+        return output.toByteArray();
+    }
+
+    private byte[] passportLikeJpeg(int width, int height) throws Exception {
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(new Color(235, 235, 230));
+        graphics.fillRect(0, 0, width, height);
+        graphics.setColor(Color.BLACK);
+        graphics.drawString("PASSPORT", 40, 80);
+        graphics.drawString("P<BENDOE<<GRACE<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", 40, height - 80);
+        graphics.drawString("P1234567<1BEN9005204F2801108<<<<<<<<<<<<<<<<", 40, height - 45);
         graphics.dispose();
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();

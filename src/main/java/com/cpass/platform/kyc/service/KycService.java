@@ -315,6 +315,25 @@ public class KycService {
                 uploadToS3(objectKey, finalBytes, finalMimeType);
             }
 
+            boolean selfieUpload = documentType == KycDocumentType.SELFIE;
+            KycImageProcessingService.MrzImageProcessingResult mrzImageProcessing = null;
+            String mrzObjectKey = null;
+            if (!selfieUpload) {
+                mrzImageProcessing = imageProcessingService.prepareMrzReady(fileBytes, mimeType);
+                if (mrzImageProcessing.processed()) {
+                    mrzObjectKey = objectKey(clientId, kycCase.getReferenceId(), "ocr-mrz-ready", timestamp, resolvedFileName);
+                    uploadToS3(mrzObjectKey, mrzImageProcessing.processedBytes(), mrzImageProcessing.processedMimeType());
+                }
+                log.info("kyc mrz image technical accountHolderId={} documentSlot={} mrzCandidateDetected={} mrzCropCoordinates={} transformationsApplied={} mrzObjectKey={} processedSizeBytes={}",
+                        accountHolderId(kycCase, metadataJson),
+                        documentType,
+                        mrzImageProcessing.processed(),
+                        mrzImageProcessing.cropCoordinates(),
+                        mrzImageProcessing.transformationsApplied(),
+                        mrzObjectKey,
+                        mrzImageProcessing.processedBytes().length);
+            }
+
             log.info("kyc image technical accountHolderId={} documentSlot={} originalWidth={} originalHeight={} originalSizeBytes={} processedWidth={} processedHeight={} processedSizeBytes={} mimeType={} compressionQuality={} transformationsApplied={} finalObjectKey={}",
                     accountHolderId(kycCase, metadataJson),
                     documentType,
@@ -329,7 +348,6 @@ public class KycService {
                     imageProcessing.transformationsApplied(),
                     objectKey);
 
-            boolean selfieUpload = documentType == KycDocumentType.SELFIE;
             DocumentAnalysisService.DocumentAnalysisResult analysis = null;
             SelfieAnalysisService.SelfieAnalysisResult selfieAnalysis = null;
             if (selfieUpload) {
@@ -349,7 +367,7 @@ public class KycService {
                         selfieAnalysis.biometricConfidenceScore());
             } else {
                 analysis = documentAnalysisService.analyze(documentType, metadataJson);
-                log.info("kyc upload analysis documentType={} detectedDocumentType={} supportedDocumentType={} mappedProviderType={} fileBytes={} fileName={} mimeType={} validityStatus={} documentNumberPresent={} expiryDate={} confidenceScore={}",
+                log.info("kyc upload analysis documentType={} detectedDocumentType={} supportedDocumentType={} mappedProviderType={} fileBytes={} fileName={} mimeType={} validityStatus={} documentNumberPresent={} expiryDate={} confidenceScore={} ocrMrzReadyObjectKey={} mrzOcrTextRawPresent={} mrzParseSuccess={} documentNumberExtracted={} expiryDateExtracted={} finalExtractionSource={}",
                         documentType,
                         analysis.detectedDocumentType(),
                         analysis.supportedDocumentType(),
@@ -360,7 +378,13 @@ public class KycService {
                         analysis.validityStatus(),
                         analysis.documentNumber() != null,
                         analysis.expiryDate(),
-                        analysis.confidenceScore());
+                        analysis.confidenceScore(),
+                        mrzObjectKey,
+                        analysis.mrzDiagnostics().get("mrzOcrTextRawPresent"),
+                        analysis.mrzDiagnostics().get("mrzParseSuccess"),
+                        analysis.mrzDiagnostics().get("documentNumberExtracted"),
+                        analysis.mrzDiagnostics().get("expiryDateExtracted"),
+                        analysis.mrzDiagnostics().get("finalExtractionSource"));
             }
 
             KycDocumentEntity document = new KycDocumentEntity();
@@ -379,7 +403,7 @@ public class KycService {
                 document.setExpiryDate(null);
                 document.setValidityStatus(selfieAnalysis.validityStatus());
             } else {
-                document.setMetadataJson(enrichedDocumentMetadata(metadataJson, analysis, imageProcessing, originalObjectKey, objectKey));
+                document.setMetadataJson(enrichedDocumentMetadata(metadataJson, analysis, imageProcessing, mrzImageProcessing, originalObjectKey, objectKey, mrzObjectKey));
                 document.setDocumentNumber(analysis.documentNumber());
                 document.setExpiryDate(analysis.expiryDate());
                 document.setValidityStatus(analysis.validityStatus());
@@ -577,14 +601,21 @@ public class KycService {
     private String enrichedDocumentMetadata(String metadataJson,
                                             DocumentAnalysisService.DocumentAnalysisResult analysis,
                                             KycImageProcessingService.ImageProcessingResult imageProcessing,
+                                            KycImageProcessingService.MrzImageProcessingResult mrzImageProcessing,
                                             String originalObjectKey,
-                                            String finalObjectKey) {
+                                            String finalObjectKey,
+                                            String mrzObjectKey) {
         Map<String, Object> metadata = new HashMap<>(documentAnalysisService.parse(metadataJson));
         metadata.put("detectedDocumentType", analysis.detectedDocumentType() == null ? null : analysis.detectedDocumentType().name());
         metadata.put("supportedDocumentType", analysis.supportedDocumentType());
         metadata.put("extractedFields", analysis.extractedFields());
         metadata.put("confidenceScore", analysis.confidenceScore());
         metadata.put("imageProcessing", imageProcessingMetadata(imageProcessing, originalObjectKey, finalObjectKey));
+        metadata.put("mrzDiagnostics", analysis.mrzDiagnostics());
+        if (mrzImageProcessing != null) {
+            metadata.put("mrzImageProcessing", mrzImageProcessingMetadata(mrzImageProcessing, mrzObjectKey));
+            metadata.put("mrzCropCoordinates", mrzImageProcessing.cropCoordinates());
+        }
         return kycFlowService.writeMetadata(metadata);
     }
 
@@ -616,6 +647,22 @@ public class KycService {
         metadata.put("mimeType", imageProcessing.mimeType());
         metadata.put("compressionQuality", imageProcessing.compressionQuality());
         metadata.put("transformationsApplied", imageProcessing.transformationsApplied());
+        return metadata;
+    }
+
+    private Map<String, Object> mrzImageProcessingMetadata(KycImageProcessingService.MrzImageProcessingResult mrzImageProcessing,
+                                                           String mrzObjectKey) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("processed", mrzImageProcessing.processed());
+        metadata.put("objectKey", mrzObjectKey);
+        metadata.put("cropCoordinates", mrzImageProcessing.cropCoordinates());
+        metadata.put("cropX", mrzImageProcessing.cropX());
+        metadata.put("cropY", mrzImageProcessing.cropY());
+        metadata.put("cropWidth", mrzImageProcessing.cropWidth());
+        metadata.put("cropHeight", mrzImageProcessing.cropHeight());
+        metadata.put("processedSizeBytes", mrzImageProcessing.processedBytes().length);
+        metadata.put("processedMimeType", mrzImageProcessing.processedMimeType());
+        metadata.put("transformationsApplied", mrzImageProcessing.transformationsApplied());
         return metadata;
     }
 
